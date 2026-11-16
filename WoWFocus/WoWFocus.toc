@@ -1,0 +1,8 @@
+## Interface: 120200
+## Title: WoWFocus
+## Notes: Strips world-quest noise so you can follow the campaign.
+## Author: Todd
+## Version: 0.1.0
+## SavedVariables: WoWFocusDB
+
+WoWFocus.lua
