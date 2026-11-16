@@ -225,7 +225,6 @@ eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("WORLD_MAP_OPEN")
-eventFrame:RegisterEvent("WORLD_MAP_OPENED")  -- name varies by patch
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
@@ -241,7 +240,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         removeWorldQuestsFromTracker()
         updateNextFrame()
 
-    elseif event == "WORLD_MAP_OPEN" or event == "WORLD_MAP_OPENED" then
+    elseif event == "WORLD_MAP_OPEN" then
         patchAllDataProviders()
         safeCall(function()
             if WorldMapFrame then
