@@ -308,6 +308,14 @@ local function createNextFrame()
 end
 
 -- ── Apply all features ────────────────────────────────────────────────────
+local function refreshMap()
+    safeCall(function()
+        if WorldMapFrame and WorldMapFrame:IsShown() then
+            WorldMapFrame:RefreshAllDataProviders()
+        end
+    end)
+end
+
 local function applyAll()
     patchAllDataProviders()
     hookObjectiveTracker()
@@ -316,6 +324,8 @@ local function applyAll()
     createNextFrame()
     updateNextFrame()
     scheduleHidePins()
+    -- Refresh the map so pins are restored or re-hidden to match current settings.
+    refreshMap()
 end
 
 -- ── Event handling ────────────────────────────────────────────────────────
@@ -343,14 +353,18 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "TASK_PROGRESS_UPDATE" then
         scheduleHidePins()
-        hideWorldQuestTrackerBlocks()
+        -- Defer: tracker draws the block after the event fires, so check on next frames.
+        C_Timer.After(0,   hideWorldQuestTrackerBlocks)
+        C_Timer.After(0.2, hideWorldQuestTrackerBlocks)
+        C_Timer.After(0.5, hideWorldQuestTrackerBlocks)
 
     elseif event == "QUEST_ACCEPTED" then
-        -- arg1 is the questID of the newly accepted quest
         if cfg and cfg.enabled and cfg.hideTracker and arg1 and shouldHideFromTracker(arg1) then
             safeCall(C_QuestLog.RemoveWorldQuestWatch, arg1)
             safeCall(C_QuestLog.RemoveQuestWatch, arg1)
         end
+        C_Timer.After(0,   hideWorldQuestTrackerBlocks)
+        C_Timer.After(0.2, hideWorldQuestTrackerBlocks)
 
     elseif event == "WORLD_MAP_OPEN" then
         patchAllDataProviders()
