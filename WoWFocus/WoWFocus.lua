@@ -213,10 +213,11 @@ local function hideWorldQuestTrackerBlocks()
         if not ObjectiveTrackerFrame or not ObjectiveTrackerFrame.MODULES then return end
         for _, module in ipairs(ObjectiveTrackerFrame.MODULES) do
             if module.usedBlocks then
-                for block in pairs(module.usedBlocks) do
-                    local qid = block.id or block.questID
+                -- usedBlocks is keyed by blockKey (often the questID); value is the block frame.
+                for key, block in pairs(module.usedBlocks) do
+                    local qid = tonumber(key) or (type(block) == "table" and (block.id or block.questID))
                     if qid and shouldHideFromTracker(qid) then
-                        block:Hide()
+                        if type(block) == "table" and block.Hide then block:Hide() end
                     end
                 end
             end
@@ -228,9 +229,15 @@ local trackerHooked = false
 local function hookObjectiveTracker()
     if trackerHooked then return end
     safeCall(function()
+        -- Hook whichever entry point exists in this patch.
         hooksecurefunc("ObjectiveTracker_Update", hideWorldQuestTrackerBlocks)
-        trackerHooked = true
     end)
+    safeCall(function()
+        if ObjectiveTrackerFrame and ObjectiveTrackerFrame.Update then
+            hooksecurefunc(ObjectiveTrackerFrame, "Update", hideWorldQuestTrackerBlocks)
+        end
+    end)
+    trackerHooked = true
 end
 
 -- ── "Next campaign quest" frame ────────────────────────────────────────────
@@ -317,6 +324,7 @@ eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("QUEST_ACCEPTED")
+eventFrame:RegisterEvent("TASK_PROGRESS_UPDATE")
 eventFrame:RegisterEvent("WORLD_MAP_OPEN")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
@@ -333,6 +341,10 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         removeWorldQuestsFromTracker()
         updateNextFrame()
 
+    elseif event == "TASK_PROGRESS_UPDATE" then
+        scheduleHidePins()
+        hideWorldQuestTrackerBlocks()
+
     elseif event == "QUEST_ACCEPTED" then
         -- arg1 is the questID of the newly accepted quest
         if cfg and cfg.enabled and cfg.hideTracker and arg1 and shouldHideFromTracker(arg1) then
@@ -343,6 +355,10 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "WORLD_MAP_OPEN" then
         patchAllDataProviders()
         scheduleHidePins()
+        -- World quest data loads from the server asynchronously on first open;
+        -- retry a few times to catch pins that appear after our initial pass.
+        C_Timer.After(1, hidePinsOnMap)
+        C_Timer.After(3, hidePinsOnMap)
     end
 end)
 
