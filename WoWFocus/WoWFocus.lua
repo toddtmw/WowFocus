@@ -71,55 +71,47 @@ end
 -- Patch the mixin prototype so every instance (current and future) is covered,
 -- then also sweep any live instances already registered on the map frame.
 
-local origProtoSSQ = {}  -- prototype originals, keyed by mixin table
-local origInstSSQ  = {}  -- live-instance originals, keyed by provider object
+local patchedProviders = {}  -- keyed by provider object
 
-local function patchProto(mixin)
-    if not mixin or origProtoSSQ[mixin] then return end
-    local orig = rawget(mixin, "ShouldShowQuest")
+local function patchProvider(provider)
+    if not provider or patchedProviders[provider] then return end
+    -- Use regular access (not rawget) so inherited methods are found too.
+    local orig = provider.ShouldShowQuest
     if type(orig) ~= "function" then return end
-    origProtoSSQ[mixin] = orig
-    mixin.ShouldShowQuest = function(self, questID)
+    patchedProviders[provider] = true
+    provider.ShouldShowQuest = function(self, questID)
         if shouldHideQuest(questID) then return false end
         return orig(self, questID)
     end
 end
 
-local function patchInstance(provider)
-    if not provider or origInstSSQ[provider] then return end
-    -- Only patch if the instance has its own override; prototype patch covers the rest.
-    local own = rawget(provider, "ShouldShowQuest")
-    if type(own) ~= "function" then return end
-    origInstSSQ[provider] = own
-    provider.ShouldShowQuest = function(self, questID)
-        if shouldHideQuest(questID) then return false end
-        return own(self, questID)
-    end
+local addDataProviderHooked = false
+local function hookAddDataProvider()
+    if addDataProviderHooked or not WorldMapFrame then return end
+    safeCall(function()
+        hooksecurefunc(WorldMapFrame, "AddDataProvider", function(_, provider)
+            patchProvider(provider)
+        end)
+        addDataProviderHooked = true
+    end)
 end
 
 local function patchAllDataProviders()
     safeCall(function()
-        -- 1. Patch well-known mixin prototypes directly (most reliable).
-        patchProto(WorldQuestDataProviderMixin)
-        patchProto(BonusObjectiveDataProviderMixin)
-        patchProto(TaskPOIDataProviderMixin)
-
+        hookAddDataProvider()
         if not WorldMapFrame then return end
-
-        -- 2. Sweep any providers already registered on the map frame.
+        -- Sweep providers already registered on the map frame.
         if WorldMapFrame.dataProviders then
             for provider in pairs(WorldMapFrame.dataProviders) do
-                -- Patch own overrides; prototype covers inherited ones.
-                patchInstance(provider)
+                patchProvider(provider)
             end
         end
-
-        -- 3. Canvas children as a last resort.
+        -- Canvas children as a last resort.
         local canvas = WorldMapFrame.ScrollContainer
                     and WorldMapFrame.ScrollContainer.Child
         if canvas then
             for _, child in ipairs({canvas:GetChildren()}) do
-                patchInstance(child)
+                patchProvider(child)
             end
         end
     end)
@@ -267,6 +259,35 @@ local subcommands = {
     ["tracker"] = function() cfg.hideTracker = not cfg.hideTracker ; removeWorldQuestsFromTracker() ; printStatus() end,
     ["next"]    = function() cfg.showNext = not cfg.showNext ; updateNextFrame() ; printStatus() end,
     ["status"]  = printStatus,
+    ["debug"]   = function()
+        print("=== WoWFocus debug ===")
+        -- Enum values
+        if Enum and Enum.QuestClassification then
+            local vals = {}
+            for k, v in pairs(Enum.QuestClassification) do
+                vals[#vals+1] = k .. "=" .. tostring(v)
+            end
+            print("  QuestClassification: " .. table.concat(vals, "  "))
+        else
+            print("  Enum.QuestClassification: missing")
+        end
+        -- API existence
+        print("  IsWorldQuest API: " .. type(C_QuestLog.IsWorldQuest))
+        print("  IsQuestTask  API: " .. type(C_QuestLog.IsQuestTask))
+        -- Providers
+        local count, patched = 0, 0
+        if WorldMapFrame and WorldMapFrame.dataProviders then
+            for p in pairs(WorldMapFrame.dataProviders) do
+                count = count + 1
+                if patchedProviders[p] then patched = patched + 1 end
+                local hasSSQ = p.ShouldShowQuest ~= nil
+                print("  provider[" .. count .. "] ShouldShowQuest=" .. tostring(hasSSQ)
+                    .. " patched=" .. tostring(patchedProviders[p] == true))
+            end
+        end
+        print("  total providers=" .. count .. "  patched=" .. patched)
+        print("  AddDataProvider hooked: " .. tostring(addDataProviderHooked))
+    end,
     ["reset"]   = function()
         WoWFocusDB = {}
         applyDefaults(WoWFocusDB, defaults)
