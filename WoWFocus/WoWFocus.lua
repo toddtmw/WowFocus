@@ -193,12 +193,43 @@ local function removeWorldQuestsFromTracker()
 end
 
 local function suppressZonePulse()
-    -- Hide the golden shimmer that fires when entering a bonus-objective area.
     safeCall(function()
         if BonusObjectivePulse then
             if BonusObjectivePulse:IsShown() then BonusObjectivePulse:Hide() end
             BonusObjectivePulse:HookScript("OnShow", function(self) self:Hide() end)
         end
+    end)
+end
+
+-- ── Objective-tracker block hiding ────────────────────────────────────────
+-- World quests in Legion+ zones are proximity-pushed into the tracker without
+-- going through the normal watch system, so RemoveQuestWatch doesn't prevent
+-- them. We hook ObjectiveTracker_Update and hide any block whose ID is a
+-- world quest / bonus objective / recurring quest right after it's drawn.
+
+local function hideWorldQuestTrackerBlocks()
+    if not (cfg and cfg.enabled and cfg.hideTracker) then return end
+    safeCall(function()
+        if not ObjectiveTrackerFrame or not ObjectiveTrackerFrame.MODULES then return end
+        for _, module in ipairs(ObjectiveTrackerFrame.MODULES) do
+            if module.usedBlocks then
+                for block in pairs(module.usedBlocks) do
+                    local qid = block.id or block.questID
+                    if qid and shouldHideFromTracker(qid) then
+                        block:Hide()
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local trackerHooked = false
+local function hookObjectiveTracker()
+    if trackerHooked then return end
+    safeCall(function()
+        hooksecurefunc("ObjectiveTracker_Update", hideWorldQuestTrackerBlocks)
+        trackerHooked = true
     end)
 end
 
@@ -272,6 +303,7 @@ end
 -- ── Apply all features ────────────────────────────────────────────────────
 local function applyAll()
     patchAllDataProviders()
+    hookObjectiveTracker()
     removeWorldQuestsFromTracker()
     suppressZonePulse()
     createNextFrame()
