@@ -13,8 +13,9 @@ local defaults = {
 }
 
 -- ── State ──────────────────────────────────────────────────────────────────
-local cfg  -- reference to the live saved-variable table, set on ADDON_LOADED
-local nextFrame  -- the "Next: <quest>" display frame
+local cfg         -- reference to the live saved-variable table, set on ADDON_LOADED
+local nextFrame   -- the "Next: <quest>" display frame
+local mixinsPatched = false
 
 -- ── Utility ───────────────────────────────────────────────────────────────
 local function applyDefaults(t, d)
@@ -26,71 +27,99 @@ end
 local function safeCall(fn, ...)
     local ok, err = pcall(fn, ...)
     if not ok then
-        -- Surface errors only during a /focus debug session; silent otherwise.
-        -- print(ADDON_NAME .. " error: " .. tostring(err))
+        -- Uncomment to debug: print(ADDON_NAME .. " err: " .. tostring(err))
     end
     return ok
 end
 
--- ── World-map pin suppression ──────────────────────────────────────────────
--- ShouldShowQuest returns false for any quest we want hidden.
--- We patch every registered data provider after the map has initialised.
-
+-- ── Quest-type helpers ────────────────────────────────────────────────────
 local function isWorldQuest(questID)
-    local ok, qtype = pcall(C_QuestLog.GetQuestClassification, questID)
-    if not ok then return false end
-    -- Classification 2 = WorldQuest (Enum.QuestClassification.WorldQuest)
-    return qtype == 2
+    -- C_QuestLog.IsWorldQuest is the authoritative retail API.
+    local ok, result = pcall(C_QuestLog.IsWorldQuest, questID)
+    if ok and result then return true end
+    -- Fallback: classification enum (War Within value = 10)
+    local ok2, cls = pcall(C_QuestLog.GetQuestClassification, questID)
+    if ok2 and Enum.QuestClassification and cls == Enum.QuestClassification.WorldQuest then
+        return true
+    end
+    return false
 end
 
 local function isBonusObjective(questID)
-    local ok, result = pcall(C_QuestLog.IsQuestBounty, questID)
-    -- IsQuestBounty doesn't exist in all patches; fall back to false
-    if not ok then return false end
-    return result == true
+    -- IsQuestTask covers bonus objectives in modern retail.
+    local ok, result = pcall(C_QuestLog.IsQuestTask, questID)
+    if ok and result then return true end
+    local ok2, cls = pcall(C_QuestLog.GetQuestClassification, questID)
+    if ok2 and Enum.QuestClassification and cls == Enum.QuestClassification.BonusObjective then
+        return true
+    end
+    return false
+end
+
+local function isRecurring(questID)
+    local ok, cls = pcall(C_QuestLog.GetQuestClassification, questID)
+    if not ok or not Enum.QuestClassification then return false end
+    return cls == Enum.QuestClassification.Recurring
 end
 
 local function shouldHideQuest(questID)
     if not (cfg and cfg.enabled and cfg.hideMapPins) then return false end
-    if isWorldQuest(questID) then return true end
-    if isBonusObjective(questID) then return true end
-    -- Daily / weekly: classification 7 = Daily, 9 = Weekly
-    local ok, qtype = pcall(C_QuestLog.GetQuestClassification, questID)
-    if ok and (qtype == 7 or qtype == 9) then return true end
-    return false
+    return isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID)
 end
 
-local origShouldShowQuest = {}  -- keyed by provider object
+-- ── World-map pin suppression ──────────────────────────────────────────────
+-- Patch the mixin prototype so every instance (current and future) is covered,
+-- then also sweep any live instances already registered on the map frame.
 
-local function patchProvider(provider)
-    if origShouldShowQuest[provider] then return end  -- already patched
-    local orig = provider.ShouldShowQuest
+local origProtoSSQ = {}  -- prototype originals, keyed by mixin table
+local origInstSSQ  = {}  -- live-instance originals, keyed by provider object
+
+local function patchProto(mixin)
+    if not mixin or origProtoSSQ[mixin] then return end
+    local orig = rawget(mixin, "ShouldShowQuest")
     if type(orig) ~= "function" then return end
-    origShouldShowQuest[provider] = orig
-    provider.ShouldShowQuest = function(self, questID)
+    origProtoSSQ[mixin] = orig
+    mixin.ShouldShowQuest = function(self, questID)
         if shouldHideQuest(questID) then return false end
         return orig(self, questID)
     end
 end
 
+local function patchInstance(provider)
+    if not provider or origInstSSQ[provider] then return end
+    -- Only patch if the instance has its own override; prototype patch covers the rest.
+    local own = rawget(provider, "ShouldShowQuest")
+    if type(own) ~= "function" then return end
+    origInstSSQ[provider] = own
+    provider.ShouldShowQuest = function(self, questID)
+        if shouldHideQuest(questID) then return false end
+        return own(self, questID)
+    end
+end
+
 local function patchAllDataProviders()
-    -- WorldMapFrame may not exist in all contexts (e.g. loading screen).
     safeCall(function()
+        -- 1. Patch well-known mixin prototypes directly (most reliable).
+        patchProto(WorldQuestDataProviderMixin)
+        patchProto(BonusObjectiveDataProviderMixin)
+        patchProto(TaskPOIDataProviderMixin)
+
         if not WorldMapFrame then return end
-        local canvas = WorldMapFrame.ScrollContainer and
-                       WorldMapFrame.ScrollContainer.Child
-        if not canvas then return end
-        for _, child in ipairs({canvas:GetChildren()}) do
-            if child.ShouldShowQuest then
-                patchProvider(child)
-            end
-        end
-        -- Also iterate registered data providers if the API exists
+
+        -- 2. Sweep any providers already registered on the map frame.
         if WorldMapFrame.dataProviders then
             for provider in pairs(WorldMapFrame.dataProviders) do
-                if provider.ShouldShowQuest then
-                    patchProvider(provider)
-                end
+                -- Patch own overrides; prototype covers inherited ones.
+                patchInstance(provider)
+            end
+        end
+
+        -- 3. Canvas children as a last resort.
+        local canvas = WorldMapFrame.ScrollContainer
+                    and WorldMapFrame.ScrollContainer.Child
+        if canvas then
+            for _, child in ipairs({canvas:GetChildren()}) do
+                patchInstance(child)
             end
         end
     end)
@@ -103,10 +132,8 @@ local function removeWorldQuestsFromTracker()
         local numEntries = C_QuestLog.GetNumQuestLogEntries()
         for i = 1, numEntries do
             local info = C_QuestLog.GetInfo(i)
-            if info and not info.isHeader then
-                if isWorldQuest(info.questID) then
-                    C_QuestLog.RemoveWorldQuestWatch(info.questID)
-                end
+            if info and not info.isHeader and isWorldQuest(info.questID) then
+                C_QuestLog.RemoveWorldQuestWatch(info.questID)
             end
         end
     end)
@@ -121,8 +148,8 @@ local function findNextCampaignQuest()
             local info = C_QuestLog.GetInfo(i)
             if info and not info.isHeader and not info.isComplete then
                 local ok, cls = pcall(C_QuestLog.GetQuestClassification, info.questID)
-                -- Classification 1 = Campaign (Enum.QuestClassification.Campaign)
-                if ok and cls == 1 then
+                if ok and Enum.QuestClassification
+                   and cls == Enum.QuestClassification.Campaign then
                     result = info.title
                     break
                 end
@@ -154,27 +181,24 @@ local function createNextFrame()
     f:SetPoint("TOP", UIParent, "TOP", 0, -60)
     f:SetFrameStrata("MEDIUM")
 
-    -- Background
     f.bg = f:CreateTexture(nil, "BACKGROUND")
     f.bg:SetAllPoints()
     f.bg:SetColorTexture(0, 0, 0, 0.55)
 
-    -- Text
     f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.text:SetPoint("CENTER", f, "CENTER", 0, 0)
     f.text:SetTextColor(1, 0.82, 0)  -- quest-gold
 
-    -- Make it draggable
     f:SetMovable(true)
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop",  f.StopMovingOrSizing)
 
-    -- Tooltip hint
     f:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-        GameTooltip:SetText("WoWFocus – next campaign quest\nDrag to reposition.", nil, nil, nil, nil, true)
+        GameTooltip:SetText("WoWFocus – next campaign quest\nDrag to reposition.",
+                            nil, nil, nil, nil, true)
         GameTooltip:Show()
     end)
     f:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -182,13 +206,12 @@ local function createNextFrame()
     nextFrame = f
 end
 
--- ── Apply / unapply all features ──────────────────────────────────────────
+-- ── Apply all features ────────────────────────────────────────────────────
 local function applyAll()
     patchAllDataProviders()
     removeWorldQuestsFromTracker()
     createNextFrame()
     updateNextFrame()
-    -- Refresh the map if it is open
     safeCall(function()
         if WorldMapFrame and WorldMapFrame:IsShown() then
             WorldMapFrame:RefreshAllDataProviders()
@@ -198,11 +221,11 @@ end
 
 -- ── Event handling ────────────────────────────────────────────────────────
 local eventFrame = CreateFrame("Frame")
-
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("WORLD_MAP_OPEN")
+eventFrame:RegisterEvent("WORLD_MAP_OPENED")  -- name varies by patch
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
@@ -218,7 +241,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         removeWorldQuestsFromTracker()
         updateNextFrame()
 
-    elseif event == "WORLD_MAP_OPEN" then
+    elseif event == "WORLD_MAP_OPEN" or event == "WORLD_MAP_OPENED" then
         patchAllDataProviders()
         safeCall(function()
             if WorldMapFrame then
@@ -238,15 +261,12 @@ local function printStatus()
 end
 
 local subcommands = {
-    -- toggle the whole addon
     [""]        = function() cfg.enabled = not cfg.enabled ; applyAll() ; printStatus() end,
     ["on"]      = function() cfg.enabled = true  ; applyAll() ; printStatus() end,
     ["off"]     = function() cfg.enabled = false ; applyAll() ; printStatus() end,
-    -- per-feature toggles
     ["map"]     = function() cfg.hideMapPins = not cfg.hideMapPins ; applyAll() ; printStatus() end,
     ["tracker"] = function() cfg.hideTracker = not cfg.hideTracker ; removeWorldQuestsFromTracker() ; printStatus() end,
-    ["next"]    = function() cfg.showNext    = not cfg.showNext    ; updateNextFrame() ; printStatus() end,
-    -- misc
+    ["next"]    = function() cfg.showNext = not cfg.showNext ; updateNextFrame() ; printStatus() end,
     ["status"]  = printStatus,
     ["reset"]   = function()
         WoWFocusDB = {}
@@ -280,6 +300,6 @@ SlashCmdList["WOWFOCUS"] = function(msg)
     if fn then
         fn()
     else
-        print("|cff00ff00WoWFocus|r: unknown command '" .. cmd .. "'. Try /focus help")
+        print("|cff00ff00WoWFocus|r: unknown command '" .. cmd .. "'. Try /wf help")
     end
 end
