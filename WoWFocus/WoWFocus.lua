@@ -13,9 +13,8 @@ local defaults = {
 }
 
 -- ── State ──────────────────────────────────────────────────────────────────
-local cfg         -- reference to the live saved-variable table, set on ADDON_LOADED
-local nextFrame   -- the "Next: <quest>" display frame
-local mixinsPatched = false
+local cfg        -- reference to the live saved-variable table, set on ADDON_LOADED
+local nextFrame  -- the "Next: <quest>" display frame
 
 -- ── Utility ───────────────────────────────────────────────────────────────
 local function applyDefaults(t, d)
@@ -34,10 +33,8 @@ end
 
 -- ── Quest-type helpers ────────────────────────────────────────────────────
 local function isWorldQuest(questID)
-    -- C_QuestLog.IsWorldQuest is the authoritative retail API.
     local ok, result = pcall(C_QuestLog.IsWorldQuest, questID)
     if ok and result then return true end
-    -- Fallback: classification enum (War Within value = 10)
     local ok2, cls = pcall(C_QuestLog.GetQuestClassification, questID)
     if ok2 and Enum.QuestClassification and cls == Enum.QuestClassification.WorldQuest then
         return true
@@ -46,7 +43,6 @@ local function isWorldQuest(questID)
 end
 
 local function isBonusObjective(questID)
-    -- IsQuestTask covers bonus objectives in modern retail.
     local ok, result = pcall(C_QuestLog.IsQuestTask, questID)
     if ok and result then return true end
     local ok2, cls = pcall(C_QuestLog.GetQuestClassification, questID)
@@ -67,15 +63,11 @@ local function shouldHideQuest(questID)
     return isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID)
 end
 
--- ── World-map pin suppression ──────────────────────────────────────────────
--- Patch the mixin prototype so every instance (current and future) is covered,
--- then also sweep any live instances already registered on the map frame.
-
-local patchedProviders = {}  -- keyed by provider object
+-- ── ShouldShowQuest patching (covers the 2 providers that use it) ──────────
+local patchedProviders = {}
 
 local function patchProvider(provider)
     if not provider or patchedProviders[provider] then return end
-    -- Use regular access (not rawget) so inherited methods are found too.
     local orig = provider.ShouldShowQuest
     if type(orig) ~= "function" then return end
     patchedProviders[provider] = true
@@ -96,17 +88,79 @@ local function hookAddDataProvider()
     end)
 end
 
+-- ── Pin-pool hiding (primary approach for providers without ShouldShowQuest) ──
+-- After any map refresh, walk every active pin in every pool and hide ones
+-- whose questID is a world quest / bonus objective / recurring quest.
+
+local hidePinsPending = false
+
+local function hidePinsOnMap()
+    if not (cfg and cfg.enabled and cfg.hideMapPins) then return end
+    safeCall(function()
+        if not WorldMapFrame then return end
+
+        -- Method 1: iterate the map's pin pools (keyed by template name)
+        if WorldMapFrame.pinPools then
+            for _, pool in pairs(WorldMapFrame.pinPools) do
+                if pool.EnumerateActive then
+                    for pin in pool:EnumerateActive() do
+                        local qid = pin.questID or (pin.questInfo and pin.questInfo.questId)
+                        if qid and shouldHideQuest(qid) then
+                            pin:Hide()
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Method 2: canvas children (catches pools using different structures)
+        local canvas = WorldMapFrame.ScrollContainer
+                    and WorldMapFrame.ScrollContainer.Child
+        if canvas then
+            for _, frame in ipairs({canvas:GetChildren()}) do
+                local qid = frame.questID or (frame.questInfo and frame.questInfo.questId)
+                if qid and shouldHideQuest(qid) then
+                    frame:Hide()
+                end
+            end
+        end
+    end)
+end
+
+local function scheduleHidePins()
+    if hidePinsPending then return end
+    hidePinsPending = true
+    C_Timer.After(0, function()
+        hidePinsPending = false
+        hidePinsOnMap()
+    end)
+end
+
+local mapRefreshHooked = false
+local function hookMapRefresh()
+    if mapRefreshHooked then return end
+    safeCall(function()
+        -- Fire after every full map refresh.
+        hooksecurefunc(WorldMapFrame, "RefreshAllDataProviders", scheduleHidePins)
+        -- Also fire after each individual provider refreshes (catches partial refreshes).
+        if MapCanvasDataProviderMixin then
+            hooksecurefunc(MapCanvasDataProviderMixin, "RefreshAllData", scheduleHidePins)
+        end
+        mapRefreshHooked = true
+    end)
+end
+
+-- ── Sweep registered data providers for ShouldShowQuest ───────────────────
 local function patchAllDataProviders()
     safeCall(function()
         hookAddDataProvider()
+        hookMapRefresh()
         if not WorldMapFrame then return end
-        -- Sweep providers already registered on the map frame.
         if WorldMapFrame.dataProviders then
             for provider in pairs(WorldMapFrame.dataProviders) do
                 patchProvider(provider)
             end
         end
-        -- Canvas children as a last resort.
         local canvas = WorldMapFrame.ScrollContainer
                     and WorldMapFrame.ScrollContainer.Child
         if canvas then
@@ -179,7 +233,7 @@ local function createNextFrame()
 
     f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.text:SetPoint("CENTER", f, "CENTER", 0, 0)
-    f.text:SetTextColor(1, 0.82, 0)  -- quest-gold
+    f.text:SetTextColor(1, 0.82, 0)
 
     f:SetMovable(true)
     f:EnableMouse(true)
@@ -204,11 +258,7 @@ local function applyAll()
     removeWorldQuestsFromTracker()
     createNextFrame()
     updateNextFrame()
-    safeCall(function()
-        if WorldMapFrame and WorldMapFrame:IsShown() then
-            WorldMapFrame:RefreshAllDataProviders()
-        end
-    end)
+    scheduleHidePins()
 end
 
 -- ── Event handling ────────────────────────────────────────────────────────
@@ -234,11 +284,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "WORLD_MAP_OPEN" then
         patchAllDataProviders()
-        safeCall(function()
-            if WorldMapFrame then
-                WorldMapFrame:RefreshAllDataProviders()
-            end
-        end)
+        scheduleHidePins()
     end
 end)
 
@@ -261,7 +307,6 @@ local subcommands = {
     ["status"]  = printStatus,
     ["debug"]   = function()
         print("=== WoWFocus debug ===")
-        -- Enum values
         if Enum and Enum.QuestClassification then
             local vals = {}
             for k, v in pairs(Enum.QuestClassification) do
@@ -271,22 +316,38 @@ local subcommands = {
         else
             print("  Enum.QuestClassification: missing")
         end
-        -- API existence
         print("  IsWorldQuest API: " .. type(C_QuestLog.IsWorldQuest))
         print("  IsQuestTask  API: " .. type(C_QuestLog.IsQuestTask))
-        -- Providers
-        local count, patched = 0, 0
-        if WorldMapFrame and WorldMapFrame.dataProviders then
-            for p in pairs(WorldMapFrame.dataProviders) do
-                count = count + 1
-                if patchedProviders[p] then patched = patched + 1 end
-                local hasSSQ = p.ShouldShowQuest ~= nil
-                print("  provider[" .. count .. "] ShouldShowQuest=" .. tostring(hasSSQ)
-                    .. " patched=" .. tostring(patchedProviders[p] == true))
+        print("  mapRefreshHooked: " .. tostring(mapRefreshHooked))
+        print("  AddDataProvider hooked: " .. tostring(addDataProviderHooked))
+        -- Pin pool sizes
+        local poolCount, hiddenPins = 0, 0
+        if WorldMapFrame and WorldMapFrame.pinPools then
+            for tpl, pool in pairs(WorldMapFrame.pinPools) do
+                if pool.EnumerateActive then
+                    local n = 0
+                    for pin in pool:EnumerateActive() do
+                        n = n + 1
+                        local qid = pin.questID or (pin.questInfo and pin.questInfo.questId)
+                        if qid and shouldHideQuest(qid) then hiddenPins = hiddenPins + 1 end
+                    end
+                    if n > 0 then
+                        poolCount = poolCount + 1
+                        print("  pool[" .. tpl .. "] active=" .. n)
+                    end
+                end
             end
         end
-        print("  total providers=" .. count .. "  patched=" .. patched)
-        print("  AddDataProvider hooked: " .. tostring(addDataProviderHooked))
+        print("  pools with pins=" .. poolCount .. "  would-hide=" .. hiddenPins)
+        -- Provider summary
+        local total, patched = 0, 0
+        if WorldMapFrame and WorldMapFrame.dataProviders then
+            for p in pairs(WorldMapFrame.dataProviders) do
+                total = total + 1
+                if patchedProviders[p] then patched = patched + 1 end
+            end
+        end
+        print("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
     end,
     ["reset"]   = function()
         WoWFocusDB = {}
@@ -304,6 +365,7 @@ local subcommands = {
         print("  /wf next      – toggle 'Next campaign quest' frame")
         print("  /wf status    – show current settings")
         print("  /wf reset     – restore defaults")
+        print("  /wf debug     – dump diagnostic info")
     end,
 }
 
