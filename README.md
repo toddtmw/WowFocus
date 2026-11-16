@@ -27,11 +27,31 @@ The "Next" frame is draggable. Its position is not yet saved between sessions (c
 
 ## Installation
 
-1. Download or clone this repository.
-2. Copy the `WoWFocus/` folder (the one that contains `WoWFocus.toc`) into your addons directory:
-   - **Windows:** `C:\Program Files (x86)\World of Warcraft\_retail_\Interface\AddOns\`
-   - **macOS:** `/Applications/World of Warcraft/_retail_/Interface/AddOns/`
-3. Launch WoW (or `/reload` if already in game) and enable **WoWFocus** on the character-select addon list.
+### One-time setup (macOS)
+
+```bash
+git clone https://github.com/toddtmw/WowFocus ~/WowFocus
+cd ~/WowFocus
+git config core.hooksPath .githooks   # enables the auto-install hook
+./install.sh                          # first copy to AddOns
+```
+
+After that, every `git pull` automatically copies the addon files to:
+
+```
+/Applications/World of Warcraft/_retail_/Interface/AddOns/WoWFocus/
+```
+
+Just `/reload` in game and you're on the latest version.
+
+### Manual install (Windows or one-off)
+
+Copy the `WoWFocus/` folder (the one that contains `WoWFocus.toc`) into:
+
+- **Windows:** `C:\Program Files (x86)\World of Warcraft\_retail_\Interface\AddOns\`
+- **macOS:** `/Applications/World of Warcraft/_retail_/Interface/AddOns/`
+
+Then launch WoW (or `/reload`) and enable **WoWFocus** on the character-select addon list.
 
 ## Slash commands
 
