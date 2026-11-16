@@ -171,16 +171,33 @@ local function patchAllDataProviders()
     end)
 end
 
--- ── Objective-tracker world-quest removal ─────────────────────────────────
+-- ── Objective-tracker removal ─────────────────────────────────────────────
+local function shouldHideFromTracker(questID)
+    return isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID)
+end
+
 local function removeWorldQuestsFromTracker()
     if not (cfg and cfg.enabled and cfg.hideTracker) then return end
     safeCall(function()
         local numEntries = C_QuestLog.GetNumQuestLogEntries()
         for i = 1, numEntries do
             local info = C_QuestLog.GetInfo(i)
-            if info and not info.isHeader and isWorldQuest(info.questID) then
-                C_QuestLog.RemoveWorldQuestWatch(info.questID)
+            if info and not info.isHeader and shouldHideFromTracker(info.questID) then
+                -- World/recurring quests use RemoveWorldQuestWatch;
+                -- bonus objectives (task quests) use RemoveQuestWatch.
+                pcall(C_QuestLog.RemoveWorldQuestWatch, info.questID)
+                pcall(C_QuestLog.RemoveQuestWatch, info.questID)
             end
+        end
+    end)
+end
+
+local function suppressZonePulse()
+    -- Hide the golden shimmer that fires when entering a bonus-objective area.
+    safeCall(function()
+        if BonusObjectivePulse then
+            if BonusObjectivePulse:IsShown() then BonusObjectivePulse:Hide() end
+            BonusObjectivePulse:HookScript("OnShow", function(self) self:Hide() end)
         end
     end)
 end
@@ -256,6 +273,7 @@ end
 local function applyAll()
     patchAllDataProviders()
     removeWorldQuestsFromTracker()
+    suppressZonePulse()
     createNextFrame()
     updateNextFrame()
     scheduleHidePins()
@@ -266,6 +284,7 @@ local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
+eventFrame:RegisterEvent("QUEST_ACCEPTED")
 eventFrame:RegisterEvent("WORLD_MAP_OPEN")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
@@ -281,6 +300,13 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "QUEST_LOG_UPDATE" then
         removeWorldQuestsFromTracker()
         updateNextFrame()
+
+    elseif event == "QUEST_ACCEPTED" then
+        -- arg1 is the questID of the newly accepted quest
+        if cfg and cfg.enabled and cfg.hideTracker and arg1 and shouldHideFromTracker(arg1) then
+            safeCall(C_QuestLog.RemoveWorldQuestWatch, arg1)
+            safeCall(C_QuestLog.RemoveQuestWatch, arg1)
+        end
 
     elseif event == "WORLD_MAP_OPEN" then
         patchAllDataProviders()
