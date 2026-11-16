@@ -209,7 +209,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         WoWFocusDB = WoWFocusDB or {}
         applyDefaults(WoWFocusDB, defaults)
         cfg = WoWFocusDB
-        print("|cff00ff00WoWFocus|r loaded. /focus for options.")
+        print("|cff00ff00WoWFocus|r loaded. /wf for options.")
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         applyAll()
@@ -256,18 +256,19 @@ local subcommands = {
         print("|cff00ff00WoWFocus|r settings reset.")
     end,
     ["help"]    = function()
-        print("|cff00ff00WoWFocus commands:|r")
-        print("  /focus           – toggle addon on/off")
-        print("  /focus on|off    – explicit on/off")
-        print("  /focus map       – toggle world-map pin hiding")
-        print("  /focus tracker   – toggle tracker world-quest removal")
-        print("  /focus next      – toggle 'Next campaign quest' frame")
-        print("  /focus status    – show current settings")
-        print("  /focus reset     – restore defaults")
+        print("|cff00ff00WoWFocus commands:|r  (/wf or /wowfocus)")
+        print("  /wf           – toggle addon on/off")
+        print("  /wf on|off    – explicit on/off")
+        print("  /wf map       – toggle world-map pin hiding")
+        print("  /wf tracker   – toggle tracker world-quest removal")
+        print("  /wf next      – toggle 'Next campaign quest' frame")
+        print("  /wf status    – show current settings")
+        print("  /wf reset     – restore defaults")
     end,
 }
 
-SLASH_WOWFOCUS1 = "/focus"
+SLASH_WOWFOCUS1 = "/wf"
+SLASH_WOWFOCUS2 = "/wowfocus"
 SlashCmdList["WOWFOCUS"] = function(msg)
     if not cfg then
         print("|cff00ff00WoWFocus|r is still loading.")

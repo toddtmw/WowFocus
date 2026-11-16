@@ -35,15 +35,17 @@ The "Next" frame is draggable. Its position is not yet saved between sessions (c
 
 ## Slash commands
 
+Both `/wf` and `/wowfocus` work. (`/focus` is a built-in WoW command that sets your focus target.)
+
 ```
-/focus           toggle addon on/off
-/focus on|off    explicit on/off
-/focus map       toggle world-map pin hiding
-/focus tracker   toggle tracker world-quest removal
-/focus next      toggle "Next campaign quest" frame
-/focus status    show current settings
-/focus reset     restore defaults
-/focus help      show this list in chat
+/wf           toggle addon on/off
+/wf on|off    explicit on/off
+/wf map       toggle world-map pin hiding
+/wf tracker   toggle tracker world-quest removal
+/wf next      toggle "Next campaign quest" frame
+/wf status    show current settings
+/wf reset     restore defaults
+/wf help      show this list in chat
 ```
 
 ## Interface version
