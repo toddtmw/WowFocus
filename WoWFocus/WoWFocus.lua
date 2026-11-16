@@ -89,23 +89,62 @@ local function hookAddDataProvider()
 end
 
 -- ── Pin-pool hiding (primary approach for providers without ShouldShowQuest) ──
--- After any map refresh, walk every active pin in every pool and hide ones
--- whose questID is a world quest / bonus objective / recurring quest.
+-- The world quest data provider re-shows its pins after every refresh, so a
+-- one-shot Hide() loses the race. Instead we hook each pin's OnShow so it
+-- hides itself the moment the data provider tries to show it.
 
 local hidePinsPending = false
+
+-- Template names whose pins should always be hidden when the addon is active.
+local HIDDEN_PIN_TEMPLATES = {
+    ["WorldMap_WorldQuestPinTemplate"] = true,
+}
+
+-- Track which pools we have already hooked so we only hook once.
+local hookedPinPools = {}
+
+local function hookPinPool(templateName, pool)
+    if hookedPinPools[pool] then return end
+    if not HIDDEN_PIN_TEMPLATES[templateName] then return end
+    hookedPinPools[pool] = true
+    safeCall(function()
+        local origAcquire = pool.Acquire
+        pool.Acquire = function(self)
+            local frame, isNew = origAcquire(self)
+            if frame and not frame.__wfOnShowHooked then
+                frame.__wfOnShowHooked = true
+                frame:HookScript("OnShow", function(pin)
+                    if cfg and cfg.enabled and cfg.hideMapPins then
+                        pin:Hide()
+                    end
+                end)
+            end
+            return frame, isNew
+        end
+    end)
+end
+
+local function hookAllPinPools()
+    if not WorldMapFrame or not WorldMapFrame.pinPools then return end
+    for templateName, pool in pairs(WorldMapFrame.pinPools) do
+        hookPinPool(templateName, pool)
+    end
+end
 
 local function hidePinsOnMap()
     if not (cfg and cfg.enabled and cfg.hideMapPins) then return end
     safeCall(function()
         if not WorldMapFrame then return end
 
-        -- Method 1: iterate the map's pin pools (keyed by template name)
+        -- Walk all pin pools; use template name to catch pools whose pins
+        -- lack a questID (e.g. older-era world quests in Legion zones).
         if WorldMapFrame.pinPools then
-            for _, pool in pairs(WorldMapFrame.pinPools) do
+            for templateName, pool in pairs(WorldMapFrame.pinPools) do
                 if pool.EnumerateActive then
+                    local isWQPool = HIDDEN_PIN_TEMPLATES[templateName]
                     for pin in pool:EnumerateActive() do
                         local qid = pin.questID or (pin.questInfo and pin.questInfo.questId)
-                        if qid and shouldHideQuest(qid) then
+                        if isWQPool or (qid and shouldHideQuest(qid)) then
                             pin:Hide()
                         end
                     end
@@ -113,7 +152,7 @@ local function hidePinsOnMap()
             end
         end
 
-        -- Method 2: canvas children (catches pools using different structures)
+        -- Canvas children fallback.
         local canvas = WorldMapFrame.ScrollContainer
                     and WorldMapFrame.ScrollContainer.Child
         if canvas then
@@ -155,6 +194,7 @@ local function patchAllDataProviders()
     safeCall(function()
         hookAddDataProvider()
         hookMapRefresh()
+        hookAllPinPools()
         if not WorldMapFrame then return end
         if WorldMapFrame.dataProviders then
             for provider in pairs(WorldMapFrame.dataProviders) do
@@ -213,11 +253,16 @@ local function hideWorldQuestTrackerBlocks()
         if not ObjectiveTrackerFrame or not ObjectiveTrackerFrame.MODULES then return end
         for _, module in ipairs(ObjectiveTrackerFrame.MODULES) do
             if module.usedBlocks then
-                -- usedBlocks is keyed by blockKey (often the questID); value is the block frame.
+                -- If the module IS the world-quest or bonus-objective module, hide
+                -- every block in it unconditionally (questID check can miss older-era quests).
+                local isWQModule = (WORLD_QUEST_TRACKER_MODULE and module == WORLD_QUEST_TRACKER_MODULE)
+                                or (BONUS_OBJECTIVE_TRACKER_MODULE and module == BONUS_OBJECTIVE_TRACKER_MODULE)
                 for key, block in pairs(module.usedBlocks) do
-                    local qid = tonumber(key) or (type(block) == "table" and (block.id or block.questID))
-                    if qid and shouldHideFromTracker(qid) then
-                        if type(block) == "table" and block.Hide then block:Hide() end
+                    local qid = tonumber(key)
+                              or (type(block) == "table" and (block.id or block.questID))
+                    local hide = isWQModule or (qid and shouldHideFromTracker(qid))
+                    if hide and type(block) == "table" and block.Hide then
+                        block:Hide()
                     end
                 end
             end
@@ -368,6 +413,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "WORLD_MAP_OPEN" then
         patchAllDataProviders()
+        hookAllPinPools()
         scheduleHidePins()
         -- World quest data loads from the server asynchronously on first open;
         -- retry a few times to catch pins that appear after our initial pass.
