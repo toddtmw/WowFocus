@@ -1,4 +1,4 @@
-## Interface: 120200
+## Interface: 120105
 ## Title: WoWFocus
 ## Notes: Strips world-quest noise so you can follow the campaign.
 ## Author: Todd
