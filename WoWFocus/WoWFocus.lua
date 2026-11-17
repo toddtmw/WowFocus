@@ -381,8 +381,25 @@ local function suppressMinimapTaskBlob()
             end
         end
     end)
-    -- Unnamed children (the blob overlay in TWW).
+    -- Unnamed children of Minimap (the blob overlay in TWW may be here).
     suppressMinimapBlobChildren()
+    -- Also try unnamed children of MinimapCluster (blob may be parented there).
+    safeCall(function()
+        if not MinimapCluster then return end
+        for _, child in ipairs({MinimapCluster:GetChildren()}) do
+            if child and not child:GetName() and not child.__wfBlobHooked then
+                child.__wfBlobHooked = true
+                minimapBlobHooked = true
+                minimapBlobChildren[#minimapBlobChildren + 1] = child
+                child:HookScript("OnShow", function(self)
+                    if cfg and cfg.enabled and cfg.hideMapPins then self:Hide() end
+                end)
+                if child:IsShown() and cfg and cfg.enabled and cfg.hideMapPins then
+                    child:Hide()
+                end
+            end
+        end
+    end)
 end
 
 -- Apply or remove the hide on the blob children when settings change.
@@ -866,24 +883,12 @@ local subcommands = {
             .. "  CloseTalkingHead=" .. type(CloseTalkingHead))
         add("  autoPopupHooked=" .. tostring(autoPopupHooked)
             .. "  minimapBlobHooked=" .. tostring(minimapBlobHooked))
-        -- Minimap: global fields, DrawBlob, pinPools, and children
+        -- Minimap: DrawBlob, pinPools, then children of both Minimap and MinimapCluster
         local mmGlobal = Minimap
         if mmGlobal then
             add("  Minimap.DrawBlob=" .. type(mmGlobal.DrawBlob)
-                .. "  pinPools=" .. type(mmGlobal.pinPools))
-            -- Pin pools (minimap uses MapCanvas just like WorldMapFrame)
-            safeCall(function()
-                if mmGlobal.pinPools then
-                    for tpl, pool in pairs(mmGlobal.pinPools) do
-                        local cnt = 0
-                        if pool.EnumerateActive then
-                            for _ in pool:EnumerateActive() do cnt = cnt + 1 end
-                        end
-                        add("  minimap pool[" .. tpl .. "] active=" .. cnt)
-                    end
-                end
-            end)
-            -- Children: name, type, size, visibility
+                .. "  pinPools=" .. type(mmGlobal.pinPools)
+                .. "  dataProviders=" .. type(mmGlobal.dataProviders))
             safeCall(function()
                 local children = {mmGlobal:GetChildren()}
                 for i, child in ipairs(children) do
@@ -897,6 +902,40 @@ local subcommands = {
                 end
             end)
         end
+        -- MinimapCluster children (blob may live here, not on Minimap)
+        safeCall(function()
+            if MinimapCluster then
+                local children = {MinimapCluster:GetChildren()}
+                add("  MinimapCluster childCount=" .. #children)
+                for i, child in ipairs(children) do
+                    local cname = child:GetName() or "unnamed"
+                    local shown = child:IsShown() and "shown" or "hidden"
+                    local otype = child:GetObjectType()
+                    local w, h = child:GetSize()
+                    add("  MC child[" .. i .. "]: " .. cname
+                        .. " " .. shown .. " " .. otype
+                        .. " " .. math.floor(w+0.5) .. "x" .. math.floor(h+0.5))
+                end
+            end
+        end)
+        -- Global scan: any frame/table with Blob or TaskPOI in its name
+        safeCall(function()
+            local found = {}
+            for gname, gval in pairs(_G) do
+                if type(gname) == "string" and type(gval) == "table" then
+                    local lo = gname:lower()
+                    if lo:find("blob") or lo:find("taskpoi") or lo:find("taskblob") then
+                        found[#found+1] = gname
+                    end
+                end
+            end
+            table.sort(found)
+            if #found > 0 then
+                add("  blob-globals: " .. table.concat(found, "  "))
+            else
+                add("  blob-globals: none found")
+            end
+        end)
 
         -- Show a copyable popup box with the same text.
         local text = table.concat(lines, "\n")
