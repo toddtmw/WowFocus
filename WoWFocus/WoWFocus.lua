@@ -242,27 +242,10 @@ local function suppressZonePulse()
 end
 
 -- Suppress the talking-head / voice-actor popup that introduces world quests.
--- CloseTalkingHead() stops the audio as well as the visual. We also intercept
--- TALKING_HEAD_REQUESTED with our own frame so the event fires our close AFTER
--- TalkingHeadFrame's own handler has started the audio (C_Timer.After(0)).
+-- TALKING_HEAD_REQUESTED does not exist as a WoW event in TWW; the frame is
+-- triggered directly from C++. We suppress it purely via HookScript("OnShow")
+-- and CloseTalkingHead() which also stops the audio.
 local talkingHeadHooked = false
-local talkingHeadEventRemoved = false
-
--- Intercept frame registered once; reacts to TALKING_HEAD_REQUESTED.
-local wfTHInterceptFrame = CreateFrame("Frame")
-wfTHInterceptFrame:RegisterEvent("TALKING_HEAD_REQUESTED")
-wfTHInterceptFrame:SetScript("OnEvent", function(self, event, ...)
-    if cfg and cfg.enabled and cfg.hideTracker then
-        C_Timer.After(0, function()
-            safeCall(function()
-                if CloseTalkingHead then CloseTalkingHead() end
-                if TalkingHeadFrame and TalkingHeadFrame:IsShown() then
-                    TalkingHeadFrame:Hide()
-                end
-            end)
-        end)
-    end
-end)
 
 local function suppressTalkingHead()
     if talkingHeadHooked then return end
@@ -279,16 +262,8 @@ local function suppressTalkingHead()
 end
 
 local function setTalkingHeadEnabled(enabled)
-    -- Try event unregistration (may fail on protected frames; best-effort).
     safeCall(function()
         if not TalkingHeadFrame then return end
-        if not enabled and not talkingHeadEventRemoved then
-            TalkingHeadFrame:UnregisterEvent("TALKING_HEAD_REQUESTED")
-            talkingHeadEventRemoved = true
-        elseif enabled and talkingHeadEventRemoved then
-            TalkingHeadFrame:RegisterEvent("TALKING_HEAD_REQUESTED")
-            talkingHeadEventRemoved = false
-        end
         if not enabled and TalkingHeadFrame:IsShown() then
             if CloseTalkingHead then CloseTalkingHead() end
             TalkingHeadFrame:Hide()
@@ -805,8 +780,7 @@ local subcommands = {
         add("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
         -- Suppression frame status
         add("  TalkingHeadFrame: " .. tostring(TalkingHeadFrame ~= nil)
-            .. "  hooked=" .. tostring(talkingHeadHooked)
-            .. "  eventRemoved=" .. tostring(talkingHeadEventRemoved))
+            .. "  hooked=" .. tostring(talkingHeadHooked))
         add("  autoPopupHooked=" .. tostring(autoPopupHooked)
             .. "  minimapBlobHooked=" .. tostring(minimapBlobHooked))
         -- Dump Minimap global directly (not MinimapCluster.Minimap)
