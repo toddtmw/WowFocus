@@ -250,19 +250,17 @@ end
 local function hideWorldQuestTrackerBlocks()
     if not (cfg and cfg.enabled and cfg.hideTracker) then return end
     safeCall(function()
-        if not ObjectiveTrackerFrame or not ObjectiveTrackerFrame.MODULES then return end
-        for _, module in ipairs(ObjectiveTrackerFrame.MODULES) do
-            if module.usedBlocks then
-                -- If the module IS the world-quest or bonus-objective module, hide
-                -- every block in it unconditionally (questID check can miss older-era quests).
-                local isWQModule = (WORLD_QUEST_TRACKER_MODULE and module == WORLD_QUEST_TRACKER_MODULE)
-                                or (BONUS_OBJECTIVE_TRACKER_MODULE and module == BONUS_OBJECTIVE_TRACKER_MODULE)
-                for key, block in pairs(module.usedBlocks) do
+        local mods = ObjectiveTrackerFrame and ObjectiveTrackerFrame.modules
+        if not mods then return end
+        for _, module in pairs(mods) do
+            -- Try usedBlocks, blocks, and activeBlocks — name changed in TWW.
+            local blocks = module.usedBlocks or module.blocks or module.activeBlocks
+            if type(blocks) == "table" then
+                for key, block in pairs(blocks) do
                     local qid = tonumber(key)
                               or (type(block) == "table" and (block.id or block.questID))
-                    local hide = isWQModule or (qid and shouldHideFromTracker(qid))
-                    if hide and type(block) == "table" and block.Hide then
-                        block:Hide()
+                    if qid and shouldHideFromTracker(qid) then
+                        if type(block) == "table" and block.Hide then block:Hide() end
                     end
                 end
             end
@@ -553,18 +551,52 @@ local subcommands = {
             local m = _G[globalName]
             add("  " .. globalName .. ": " .. (m and "exists" or "nil"))
         end
-        -- Dump non-function fields of ObjectiveTrackerFrame to understand TWW structure
-        if ObjectiveTrackerFrame then
-            local keys = {}
-            for k, v in pairs(ObjectiveTrackerFrame) do
-                if type(v) ~= "function" then
-                    keys[#keys+1] = k .. "(" .. type(v) .. ")"
+        -- Dump ObjectiveTrackerFrame.modules (lowercase, the TWW structure)
+        local otfMods = ObjectiveTrackerFrame and ObjectiveTrackerFrame.modules
+        if otfMods then
+            local count = 0
+            for _ in pairs(otfMods) do count = count + 1 end
+            add("  OTF.modules count=" .. count)
+            for k, module in pairs(otfMods) do
+                local info = "  mod[" .. tostring(k) .. "]"
+                local id = module.id or module.moduleType or module.name or module.questType or "?"
+                info = info .. " id=" .. tostring(id)
+                -- Header text (the section label shown in the tracker UI)
+                local hdr = ""
+                if module.Header then
+                    if module.Header.Text then
+                        local ok, t = pcall(function() return module.Header.Text:GetText() end)
+                        if ok and t then hdr = t end
+                    elseif module.Header.title then
+                        local ok, t = pcall(function() return module.Header.title:GetText() end)
+                        if ok and t then hdr = t end
+                    end
                 end
+                if hdr ~= "" then info = info .. " hdr=\"" .. hdr .. "\"" end
+                -- Block count
+                local blocks = module.usedBlocks or module.blocks or module.activeBlocks
+                local blockCount, firstKey = 0, nil
+                if type(blocks) == "table" then
+                    for bk in pairs(blocks) do
+                        blockCount = blockCount + 1
+                        if not firstKey then firstKey = tostring(bk) end
+                    end
+                end
+                info = info .. " blocks=" .. blockCount
+                if firstKey then
+                    info = info .. " key0=" .. firstKey
+                    local qid = tonumber(firstKey)
+                    if qid then
+                        local ok, isWQ = pcall(C_QuestLog.IsWorldQuest, qid)
+                        local ok2, cls  = pcall(C_QuestLog.GetQuestClassification, qid)
+                        info = info .. " isWQ=" .. tostring(ok and isWQ)
+                              .. " cls=" .. tostring(ok2 and cls)
+                    end
+                end
+                add(info)
             end
-            table.sort(keys)
-            add("  OTF fields: " .. table.concat(keys, "  "))
         else
-            add("  ObjectiveTrackerFrame: nil")
+            add("  OTF.modules: nil")
         end
         local total, patched = 0, 0
         if WorldMapFrame and WorldMapFrame.dataProviders then
