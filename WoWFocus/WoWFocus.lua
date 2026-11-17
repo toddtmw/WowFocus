@@ -242,10 +242,20 @@ local function suppressZonePulse()
 end
 
 -- Suppress the talking-head / voice-actor popup that introduces world quests.
--- TALKING_HEAD_REQUESTED does not exist as a WoW event in TWW; the frame is
--- triggered directly from C++. We suppress it purely via HookScript("OnShow")
--- and CloseTalkingHead() which also stops the audio.
+-- TWW triggers TalkingHeadFrame from C++ with no Lua event; HookScript("OnShow")
+-- is the hook point.  A periodic ticker provides belt-and-suspenders coverage
+-- for frames that use alpha-fade rather than a true Show() call.
 local talkingHeadHooked = false
+local talkingHeadTicker = nil
+
+local function closeTalkingHeadNow()
+    safeCall(function()
+        if CloseTalkingHead then CloseTalkingHead() end
+        if TalkingHeadFrame and TalkingHeadFrame:IsShown() then
+            TalkingHeadFrame:Hide()
+        end
+    end)
+end
 
 local function suppressTalkingHead()
     if talkingHeadHooked then return end
@@ -254,21 +264,32 @@ local function suppressTalkingHead()
         talkingHeadHooked = true
         TalkingHeadFrame:HookScript("OnShow", function(self)
             if cfg and cfg.enabled and cfg.hideTracker then
-                safeCall(function() if CloseTalkingHead then CloseTalkingHead() end end)
-                self:Hide()
+                closeTalkingHeadNow()
             end
         end)
     end)
 end
 
 local function setTalkingHeadEnabled(enabled)
-    safeCall(function()
-        if not TalkingHeadFrame then return end
-        if not enabled and TalkingHeadFrame:IsShown() then
-            if CloseTalkingHead then CloseTalkingHead() end
-            TalkingHeadFrame:Hide()
+    if not enabled then
+        -- Immediate close if already visible.
+        closeTalkingHeadNow()
+        -- Periodic ticker: catches alpha-fade-in frames that bypass OnShow.
+        if not talkingHeadTicker then
+            talkingHeadTicker = C_Timer.NewTicker(0.25, function()
+                if cfg and cfg.enabled and cfg.hideTracker then
+                    if TalkingHeadFrame and TalkingHeadFrame:IsShown() then
+                        closeTalkingHeadNow()
+                    end
+                end
+            end)
         end
-    end)
+    else
+        if talkingHeadTicker then
+            talkingHeadTicker:Cancel()
+            talkingHeadTicker = nil
+        end
+    end
 end
 
 -- Suppress the auto-quest-popup announcement banner.
@@ -390,6 +411,14 @@ local function hideTrackerModule(module)
             for _, block in pairs(blocks) do
                 if type(block) == "table" then
                     hookBlockOnShow(block)
+                    -- Stop the fly-in animation on the block itself plus children.
+                    safeCall(function()
+                        if block.StopAnimating then block:StopAnimating() end
+                        for _, child in ipairs({block:GetChildren()}) do
+                            if child.StopAnimating then child:StopAnimating() end
+                            child:Hide()
+                        end
+                    end)
                     if block.Hide then block:Hide() end
                 end
             end
@@ -779,30 +808,39 @@ local subcommands = {
         end
         add("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
         -- Suppression frame status
+        local thShown = TalkingHeadFrame and TalkingHeadFrame:IsShown()
         add("  TalkingHeadFrame: " .. tostring(TalkingHeadFrame ~= nil)
-            .. "  hooked=" .. tostring(talkingHeadHooked))
+            .. "  IsShown=" .. tostring(thShown)
+            .. "  hooked=" .. tostring(talkingHeadHooked)
+            .. "  ticker=" .. tostring(talkingHeadTicker ~= nil)
+            .. "  CloseTalkingHead=" .. type(CloseTalkingHead))
         add("  autoPopupHooked=" .. tostring(autoPopupHooked)
             .. "  minimapBlobHooked=" .. tostring(minimapBlobHooked))
-        -- Dump Minimap global directly (not MinimapCluster.Minimap)
+        -- Minimap: global fields, DrawBlob, pinPools, and children
         local mmGlobal = Minimap
         if mmGlobal then
-            local mmKeys = {}
-            for k, v in pairs(mmGlobal) do
-                if type(v) ~= "function" then
-                    mmKeys[#mmKeys+1] = k .. "(" .. type(v) .. ")"
+            add("  Minimap.DrawBlob=" .. type(mmGlobal.DrawBlob)
+                .. "  pinPools=" .. type(mmGlobal.pinPools))
+            -- Pin pools (minimap uses MapCanvas just like WorldMapFrame)
+            safeCall(function()
+                if mmGlobal.pinPools then
+                    for tpl, pool in pairs(mmGlobal.pinPools) do
+                        local cnt = 0
+                        if pool.EnumerateActive then
+                            for _ in pool:EnumerateActive() do cnt = cnt + 1 end
+                        end
+                        add("  minimap pool[" .. tpl .. "] active=" .. cnt)
+                    end
                 end
-            end
-            table.sort(mmKeys)
-            add("  Minimap(global) fields: " .. table.concat(mmKeys, "  "))
-            add("  Minimap.DrawBlob type: " .. type(mmGlobal.DrawBlob))
-            -- Enumerate children
+            end)
+            -- Children: name + IsShown
             safeCall(function()
                 local children = {mmGlobal:GetChildren()}
                 for i, child in ipairs(children) do
                     local cname = child:GetName() or "unnamed"
-                    add("  Minimap child[" .. i .. "]: " .. cname)
+                    local shown = child:IsShown() and "shown" or "hidden"
+                    add("  Minimap child[" .. i .. "]: " .. cname .. " " .. shown)
                 end
-                add("  Minimap child count: " .. #children)
             end)
         end
 
