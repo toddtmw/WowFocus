@@ -242,22 +242,44 @@ local function suppressZonePulse()
 end
 
 -- Suppress the talking-head / voice-actor popup that introduces world quests.
--- We unregister TALKING_HEAD_REQUESTED so the audio never starts, not just the
--- visual. Re-register the event when the addon is disabled.
+-- CloseTalkingHead() stops the audio as well as the visual. We also intercept
+-- TALKING_HEAD_REQUESTED with our own frame so the event fires our close AFTER
+-- TalkingHeadFrame's own handler has started the audio (C_Timer.After(0)).
 local talkingHeadHooked = false
 local talkingHeadEventRemoved = false
+
+-- Intercept frame registered once; reacts to TALKING_HEAD_REQUESTED.
+local wfTHInterceptFrame = CreateFrame("Frame")
+wfTHInterceptFrame:RegisterEvent("TALKING_HEAD_REQUESTED")
+wfTHInterceptFrame:SetScript("OnEvent", function(self, event, ...)
+    if cfg and cfg.enabled and cfg.hideTracker then
+        C_Timer.After(0, function()
+            safeCall(function()
+                if CloseTalkingHead then CloseTalkingHead() end
+                if TalkingHeadFrame and TalkingHeadFrame:IsShown() then
+                    TalkingHeadFrame:Hide()
+                end
+            end)
+        end)
+    end
+end)
+
 local function suppressTalkingHead()
     if talkingHeadHooked then return end
     safeCall(function()
         if not TalkingHeadFrame then return end
         talkingHeadHooked = true
         TalkingHeadFrame:HookScript("OnShow", function(self)
-            if cfg and cfg.enabled and cfg.hideTracker then self:Hide() end
+            if cfg and cfg.enabled and cfg.hideTracker then
+                safeCall(function() if CloseTalkingHead then CloseTalkingHead() end end)
+                self:Hide()
+            end
         end)
     end)
 end
 
 local function setTalkingHeadEnabled(enabled)
+    -- Try event unregistration (may fail on protected frames; best-effort).
     safeCall(function()
         if not TalkingHeadFrame then return end
         if not enabled and not talkingHeadEventRemoved then
@@ -268,6 +290,7 @@ local function setTalkingHeadEnabled(enabled)
             talkingHeadEventRemoved = false
         end
         if not enabled and TalkingHeadFrame:IsShown() then
+            if CloseTalkingHead then CloseTalkingHead() end
             TalkingHeadFrame:Hide()
         end
     end)
@@ -297,13 +320,32 @@ local function suppressAutoQuestPopup()
 end
 
 -- Suppress the minimap zone-outline blob drawn around world-quest/task areas.
+-- In TWW the blob is drawn directly via Minimap:DrawBlob(questID, bool) rather
+-- than through a named child frame. We hook that method and immediately erase
+-- any blob for a world quest. We also hide any TaskBlobFrame / QuestBlobFrame
+-- children that might still exist on some patches.
 local minimapBlobHooked = false
 local function suppressMinimapTaskBlob()
     if minimapBlobHooked then return end
     safeCall(function()
-        -- Try every known path; the frame name shifted across patches.
+        -- DrawBlob hook: intercept direct blob-draw calls on the minimap.
+        local mmFrame = Minimap
+        if mmFrame and type(mmFrame.DrawBlob) == "function" then
+            minimapBlobHooked = true
+            hooksecurefunc(mmFrame, "DrawBlob", function(self, questID, drawIt)
+                if drawIt and cfg and cfg.enabled and cfg.hideMapPins then
+                    if isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID) then
+                        C_Timer.After(0, function()
+                            safeCall(function() mmFrame:DrawBlob(questID, false) end)
+                        end)
+                    end
+                end
+            end)
+        end
+        -- Also hide legacy named child frames if present.
         local candidates = {
             Minimap and rawget(Minimap, "TaskBlobFrame"),
+            Minimap and rawget(Minimap, "QuestBlobFrame"),
             MinimapCluster and MinimapCluster.Minimap
                            and rawget(MinimapCluster.Minimap, "TaskBlobFrame"),
             _G["MinimapTaskBlobFrame"],
@@ -349,7 +391,17 @@ local function hookBlockOnShow(block)
     block.__wfBlockHooked = true
     safeCall(function()
         block:HookScript("OnShow", function(self)
-            if cfg and cfg.enabled and cfg.hideTracker then self:Hide() end
+            if cfg and cfg.enabled and cfg.hideTracker then
+                -- Stop the fly-in animation before it renders a single frame.
+                safeCall(function()
+                    if self.StopAnimating then self:StopAnimating() end
+                    for _, child in ipairs({self:GetChildren()}) do
+                        if child.StopAnimating then child:StopAnimating() end
+                        child:Hide()
+                    end
+                end)
+                self:Hide()
+            end
         end)
     end)
 end
@@ -757,17 +809,27 @@ local subcommands = {
             .. "  eventRemoved=" .. tostring(talkingHeadEventRemoved))
         add("  autoPopupHooked=" .. tostring(autoPopupHooked)
             .. "  minimapBlobHooked=" .. tostring(minimapBlobHooked))
-        -- Dump Minimap non-function fields to find the blob frame name
-        local mmFrame = (MinimapCluster and MinimapCluster.Minimap) or Minimap
-        if mmFrame then
+        -- Dump Minimap global directly (not MinimapCluster.Minimap)
+        local mmGlobal = Minimap
+        if mmGlobal then
             local mmKeys = {}
-            for k, v in pairs(mmFrame) do
+            for k, v in pairs(mmGlobal) do
                 if type(v) ~= "function" then
                     mmKeys[#mmKeys+1] = k .. "(" .. type(v) .. ")"
                 end
             end
             table.sort(mmKeys)
-            add("  Minimap fields: " .. table.concat(mmKeys, "  "))
+            add("  Minimap(global) fields: " .. table.concat(mmKeys, "  "))
+            add("  Minimap.DrawBlob type: " .. type(mmGlobal.DrawBlob))
+            -- Enumerate children
+            safeCall(function()
+                local children = {mmGlobal:GetChildren()}
+                for i, child in ipairs(children) do
+                    local cname = child:GetName() or "unnamed"
+                    add("  Minimap child[" .. i .. "]: " .. cname)
+                end
+                add("  Minimap child count: " .. #children)
+            end)
         end
 
         -- Show a copyable popup box with the same text.
