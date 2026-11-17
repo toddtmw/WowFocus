@@ -242,10 +242,39 @@ local function suppressZonePulse()
 end
 
 -- ── Objective-tracker block hiding ────────────────────────────────────────
--- World quests in Legion+ zones are proximity-pushed into the tracker without
--- going through the normal watch system, so RemoveQuestWatch doesn't prevent
--- them. We hook ObjectiveTracker_Update and hide any block whose ID is a
--- world quest / bonus objective / recurring quest right after it's drawn.
+-- In TWW, ObjectiveTrackerFrame.modules (lowercase) is an array of module
+-- objects. Each module has a Header.Text showing its section label.
+-- usedBlocks is keyed by TEMPLATE NAME strings (not questIDs), so we match
+-- modules by header text and hide the whole module rather than per-questID.
+
+-- Section headers to suppress entirely.
+local HIDDEN_TRACKER_HEADERS = {
+    ["World Quests"]    = true,
+    ["Bonus Objectives"]= true,
+}
+
+local function getModuleHeader(module)
+    local hdr = ""
+    safeCall(function()
+        if module.Header and module.Header.Text then
+            hdr = module.Header.Text:GetText() or ""
+        end
+    end)
+    return hdr
+end
+
+local function hideTrackerModule(module)
+    safeCall(function()
+        if module.Hide then module:Hide() end
+        if module.Header and module.Header.Hide then module.Header:Hide() end
+        local blocks = module.usedBlocks or module.blocks or module.activeBlocks
+        if type(blocks) == "table" then
+            for _, block in pairs(blocks) do
+                if type(block) == "table" and block.Hide then block:Hide() end
+            end
+        end
+    end)
+end
 
 local function hideWorldQuestTrackerBlocks()
     if not (cfg and cfg.enabled and cfg.hideTracker) then return end
@@ -253,19 +282,49 @@ local function hideWorldQuestTrackerBlocks()
         local mods = ObjectiveTrackerFrame and ObjectiveTrackerFrame.modules
         if not mods then return end
         for _, module in pairs(mods) do
-            -- Try usedBlocks, blocks, and activeBlocks — name changed in TWW.
-            local blocks = module.usedBlocks or module.blocks or module.activeBlocks
-            if type(blocks) == "table" then
-                for key, block in pairs(blocks) do
-                    local qid = tonumber(key)
-                              or (type(block) == "table" and (block.id or block.questID))
-                    if qid and shouldHideFromTracker(qid) then
-                        if type(block) == "table" and block.Hide then block:Hide() end
-                    end
-                end
+            if HIDDEN_TRACKER_HEADERS[getModuleHeader(module)] then
+                hideTrackerModule(module)
             end
         end
     end)
+end
+
+-- Hook each suppressed module's Update so every redraw is intercepted.
+local hookedModuleRefs = {}
+local function hookTrackerModulesByHeader()
+    local mods = ObjectiveTrackerFrame and ObjectiveTrackerFrame.modules
+    if not mods then return end
+    for _, module in pairs(mods) do
+        if not hookedModuleRefs[module] and HIDDEN_TRACKER_HEADERS[getModuleHeader(module)] then
+            hookedModuleRefs[module] = true
+            safeCall(function()
+                -- hooksecurefunc only works on instance keys; set the method on
+                -- the instance first if it lives only in the metatable.
+                if not rawget(module, "Update") then
+                    local mt = getmetatable(module)
+                    local orig = mt and mt.__index and mt.__index.Update
+                    if type(orig) == "function" then
+                        module.Update = function(self, ...)
+                            orig(self, ...)
+                            if cfg and cfg.enabled and cfg.hideTracker then
+                                hideTrackerModule(self)
+                            end
+                        end
+                        return
+                    end
+                end
+                hooksecurefunc(module, "Update", function(self)
+                    if cfg and cfg.enabled and cfg.hideTracker then
+                        hideTrackerModule(self)
+                    end
+                end)
+            end)
+            -- Hide immediately.
+            if cfg and cfg.enabled and cfg.hideTracker then
+                hideTrackerModule(module)
+            end
+        end
+    end
 end
 
 -- Modules whose every block we suppress entirely when the addon is active.
@@ -327,23 +386,7 @@ local function hookObjectiveTracker()
     if trackerHooked then return end
     trackerHooked = true
 
-    -- Hook the specific world-quest/bonus-objective/popup modules by name.
-    -- Doing this inside their own Update ensures we re-hide after every redraw.
-    for _, globalName in ipairs(SUPPRESSED_TRACKER_MODULES) do
-        local module = _G[globalName]
-        if module and module.Update then
-            safeCall(function()
-                hooksecurefunc(module, "Update", function(self)
-                    if cfg and cfg.enabled and cfg.hideTracker then
-                        hideModuleCompletely(self)
-                    end
-                end)
-            end)
-        end
-    end
-
-    -- Fallback: hook the global ObjectiveTracker_Update and frame Update
-    -- to catch any module we may have missed by name.
+    -- Hook the tracker frame's own Update as a catch-all.
     safeCall(function()
         hooksecurefunc("ObjectiveTracker_Update", hideWorldQuestTrackerBlocks)
     end)
@@ -352,6 +395,9 @@ local function hookObjectiveTracker()
             hooksecurefunc(ObjectiveTrackerFrame, "Update", hideWorldQuestTrackerBlocks)
         end
     end)
+
+    -- Hook individual modules by header text (TWW structure).
+    hookTrackerModulesByHeader()
 end
 
 -- ── "Next campaign quest" frame ────────────────────────────────────────────
@@ -434,6 +480,7 @@ local function applyAll()
     patchAllDataProviders()
     hookObjectiveTracker()
     hookQuestWatching()
+    hookTrackerModulesByHeader()
     removeWorldQuestsFromTracker()
     suppressZonePulse()
     createNextFrame()
