@@ -241,6 +241,68 @@ local function suppressZonePulse()
     end)
 end
 
+-- Suppress the talking-head / voice-actor popup that introduces world quests.
+local talkingHeadHooked = false
+local function suppressTalkingHead()
+    if talkingHeadHooked then return end
+    safeCall(function()
+        if not TalkingHeadFrame then return end
+        talkingHeadHooked = true
+        if TalkingHeadFrame:IsShown() then TalkingHeadFrame:Hide() end
+        TalkingHeadFrame:HookScript("OnShow", function(self)
+            if cfg and cfg.enabled and cfg.hideTracker then self:Hide() end
+        end)
+    end)
+end
+
+-- Suppress the auto-quest-popup announcement banner.
+local autoPopupHooked = false
+local function suppressAutoQuestPopup()
+    if autoPopupHooked then return end
+    safeCall(function()
+        -- Several possible frame names across patches
+        local candidates = {
+            _G["AutoQuestPopupTrackerFrame"],
+            _G["BonusObjectiveTrackerFrameAlertFrame"],
+            _G["QuestTurnInFailedAlertFrame"],
+        }
+        for _, f in ipairs(candidates) do
+            if f and f.HookScript then
+                autoPopupHooked = true
+                f:HookScript("OnShow", function(self)
+                    if cfg and cfg.enabled and cfg.hideTracker then self:Hide() end
+                end)
+                if f:IsShown() then f:Hide() end
+            end
+        end
+    end)
+end
+
+-- Suppress the minimap zone-outline blob drawn around world-quest/task areas.
+local minimapBlobHooked = false
+local function suppressMinimapTaskBlob()
+    if minimapBlobHooked then return end
+    safeCall(function()
+        -- Try every known path; the frame name shifted across patches.
+        local candidates = {
+            Minimap and rawget(Minimap, "TaskBlobFrame"),
+            MinimapCluster and MinimapCluster.Minimap
+                           and rawget(MinimapCluster.Minimap, "TaskBlobFrame"),
+            _G["MinimapTaskBlobFrame"],
+            _G["TaskPOIFrame"],
+        }
+        for _, f in ipairs(candidates) do
+            if f and f.HookScript then
+                minimapBlobHooked = true
+                if f:IsShown() then f:Hide() end
+                f:HookScript("OnShow", function(self)
+                    if cfg and cfg.enabled and cfg.hideMapPins then self:Hide() end
+                end)
+            end
+        end
+    end)
+end
+
 -- ── Objective-tracker block hiding ────────────────────────────────────────
 -- In TWW, ObjectiveTrackerFrame.modules (lowercase) is an array of module
 -- objects. Each module has a Header.Text showing its section label.
@@ -483,6 +545,9 @@ local function applyAll()
     hookTrackerModulesByHeader()
     removeWorldQuestsFromTracker()
     suppressZonePulse()
+    suppressTalkingHead()
+    suppressAutoQuestPopup()
+    suppressMinimapTaskBlob()
     createNextFrame()
     updateNextFrame()
     scheduleHidePins()
@@ -653,6 +718,22 @@ local subcommands = {
             end
         end
         add("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
+        -- Suppression frame status
+        add("  TalkingHeadFrame: " .. tostring(TalkingHeadFrame ~= nil)
+            .. "  hooked=" .. tostring(talkingHeadHooked))
+        add("  autoPopupHooked=" .. tostring(autoPopupHooked)
+            .. "  minimapBlobHooked=" .. tostring(minimapBlobHooked))
+        -- Minimap blob candidate check
+        local blobCandidates = {
+            {"Minimap.TaskBlobFrame",    Minimap and rawget(Minimap, "TaskBlobFrame")},
+            {"MinimapCluster.TaskBlob",  MinimapCluster and MinimapCluster.Minimap
+                                         and rawget(MinimapCluster.Minimap, "TaskBlobFrame")},
+            {"MinimapTaskBlobFrame",     _G["MinimapTaskBlobFrame"]},
+            {"TaskPOIFrame",             _G["TaskPOIFrame"]},
+        }
+        for _, pair in ipairs(blobCandidates) do
+            if pair[2] then add("  blob found: " .. pair[1]) end
+        end
 
         -- Show a copyable popup box with the same text.
         local text = table.concat(lines, "\n")
