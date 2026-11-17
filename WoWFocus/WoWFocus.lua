@@ -517,15 +517,43 @@ local subcommands = {
             end
         end
         add("  pools with pins=" .. poolCount .. "  would-hide=" .. hiddenPins)
+        -- Legacy global check (all nil in TWW -- left for reference)
         for _, globalName in ipairs(SUPPRESSED_TRACKER_MODULES) do
             local m = _G[globalName]
-            local blockCount = 0
-            if m and m.usedBlocks then
-                for _ in pairs(m.usedBlocks) do blockCount = blockCount + 1 end
+            add("  " .. globalName .. ": " .. (m and "exists" or "nil"))
+        end
+        -- Full dump of actual tracker modules in this build
+        if ObjectiveTrackerFrame and ObjectiveTrackerFrame.MODULES then
+            add("  tracker MODULES count=" .. #ObjectiveTrackerFrame.MODULES)
+            for i, module in ipairs(ObjectiveTrackerFrame.MODULES) do
+                local info = "  mod[" .. i .. "]"
+                info = info .. " id=" .. tostring(module.id or module.moduleName or "?")
+                if module.Header and module.Header.Text then
+                    local t = module.Header.Text:GetText()
+                    if t then info = info .. " hdr=\"" .. t .. "\"" end
+                end
+                local blockCount, firstKey = 0, nil
+                if module.usedBlocks then
+                    for k in pairs(module.usedBlocks) do
+                        blockCount = blockCount + 1
+                        if not firstKey then firstKey = tostring(k) end
+                    end
+                end
+                info = info .. " blocks=" .. blockCount
+                if firstKey then
+                    info = info .. " key0=" .. firstKey
+                    local qid = tonumber(firstKey)
+                    if qid then
+                        local ok, isWQ = pcall(C_QuestLog.IsWorldQuest, qid)
+                        local ok2, cls  = pcall(C_QuestLog.GetQuestClassification, qid)
+                        info = info .. " isWQ=" .. tostring(ok and isWQ)
+                              .. " cls=" .. tostring(ok2 and cls)
+                    end
+                end
+                add(info)
             end
-            add("  " .. globalName .. ": " .. (m and "exists" or "nil")
-                .. "  blocks=" .. blockCount
-                .. "  Update=" .. tostring(m and m.Update ~= nil))
+        else
+            add("  ObjectiveTrackerFrame.MODULES: nil")
         end
         local total, patched = 0, 0
         if WorldMapFrame and WorldMapFrame.dataProviders then
