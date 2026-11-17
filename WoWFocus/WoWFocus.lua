@@ -294,6 +294,36 @@ local function hideModuleCompletely(module)
     end)
 end
 
+-- Hook C_QuestLog watch functions so proximity-pushed world quests are
+-- removed at the source before the tracker can display them.
+local watchHooked = false
+local function hookQuestWatching()
+    if watchHooked then return end
+    watchHooked = true
+    -- Any quest added via AddWorldQuestWatch is definitionally a world quest.
+    safeCall(function()
+        hooksecurefunc(C_QuestLog, "AddWorldQuestWatch", function(questID)
+            if cfg and cfg.enabled and cfg.hideTracker then
+                C_Timer.After(0, function()
+                    pcall(C_QuestLog.RemoveWorldQuestWatch, questID)
+                    pcall(C_QuestLog.RemoveQuestWatch, questID)
+                end)
+            end
+        end)
+    end)
+    -- AddQuestWatch covers bonus objectives and task quests.
+    safeCall(function()
+        hooksecurefunc(C_QuestLog, "AddQuestWatch", function(questID)
+            if cfg and cfg.enabled and cfg.hideTracker and shouldHideFromTracker(questID) then
+                C_Timer.After(0, function()
+                    pcall(C_QuestLog.RemoveQuestWatch, questID)
+                    pcall(C_QuestLog.RemoveWorldQuestWatch, questID)
+                end)
+            end
+        end)
+    end)
+end
+
 local trackerHooked = false
 local function hookObjectiveTracker()
     if trackerHooked then return end
@@ -405,6 +435,7 @@ end
 local function applyAll()
     patchAllDataProviders()
     hookObjectiveTracker()
+    hookQuestWatching()
     removeWorldQuestsFromTracker()
     suppressZonePulse()
     createNextFrame()
@@ -522,38 +553,18 @@ local subcommands = {
             local m = _G[globalName]
             add("  " .. globalName .. ": " .. (m and "exists" or "nil"))
         end
-        -- Full dump of actual tracker modules in this build
-        if ObjectiveTrackerFrame and ObjectiveTrackerFrame.MODULES then
-            add("  tracker MODULES count=" .. #ObjectiveTrackerFrame.MODULES)
-            for i, module in ipairs(ObjectiveTrackerFrame.MODULES) do
-                local info = "  mod[" .. i .. "]"
-                info = info .. " id=" .. tostring(module.id or module.moduleName or "?")
-                if module.Header and module.Header.Text then
-                    local t = module.Header.Text:GetText()
-                    if t then info = info .. " hdr=\"" .. t .. "\"" end
+        -- Dump non-function fields of ObjectiveTrackerFrame to understand TWW structure
+        if ObjectiveTrackerFrame then
+            local keys = {}
+            for k, v in pairs(ObjectiveTrackerFrame) do
+                if type(v) ~= "function" then
+                    keys[#keys+1] = k .. "(" .. type(v) .. ")"
                 end
-                local blockCount, firstKey = 0, nil
-                if module.usedBlocks then
-                    for k in pairs(module.usedBlocks) do
-                        blockCount = blockCount + 1
-                        if not firstKey then firstKey = tostring(k) end
-                    end
-                end
-                info = info .. " blocks=" .. blockCount
-                if firstKey then
-                    info = info .. " key0=" .. firstKey
-                    local qid = tonumber(firstKey)
-                    if qid then
-                        local ok, isWQ = pcall(C_QuestLog.IsWorldQuest, qid)
-                        local ok2, cls  = pcall(C_QuestLog.GetQuestClassification, qid)
-                        info = info .. " isWQ=" .. tostring(ok and isWQ)
-                              .. " cls=" .. tostring(ok2 and cls)
-                    end
-                end
-                add(info)
             end
+            table.sort(keys)
+            add("  OTF fields: " .. table.concat(keys, "  "))
         else
-            add("  ObjectiveTrackerFrame.MODULES: nil")
+            add("  ObjectiveTrackerFrame: nil")
         end
         local total, patched = 0, 0
         if WorldMapFrame and WorldMapFrame.dataProviders then
