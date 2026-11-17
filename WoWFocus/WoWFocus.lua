@@ -242,16 +242,34 @@ local function suppressZonePulse()
 end
 
 -- Suppress the talking-head / voice-actor popup that introduces world quests.
+-- We unregister TALKING_HEAD_REQUESTED so the audio never starts, not just the
+-- visual. Re-register the event when the addon is disabled.
 local talkingHeadHooked = false
+local talkingHeadEventRemoved = false
 local function suppressTalkingHead()
     if talkingHeadHooked then return end
     safeCall(function()
         if not TalkingHeadFrame then return end
         talkingHeadHooked = true
-        if TalkingHeadFrame:IsShown() then TalkingHeadFrame:Hide() end
         TalkingHeadFrame:HookScript("OnShow", function(self)
             if cfg and cfg.enabled and cfg.hideTracker then self:Hide() end
         end)
+    end)
+end
+
+local function setTalkingHeadEnabled(enabled)
+    safeCall(function()
+        if not TalkingHeadFrame then return end
+        if not enabled and not talkingHeadEventRemoved then
+            TalkingHeadFrame:UnregisterEvent("TALKING_HEAD_REQUESTED")
+            talkingHeadEventRemoved = true
+        elseif enabled and talkingHeadEventRemoved then
+            TalkingHeadFrame:RegisterEvent("TALKING_HEAD_REQUESTED")
+            talkingHeadEventRemoved = false
+        end
+        if not enabled and TalkingHeadFrame:IsShown() then
+            TalkingHeadFrame:Hide()
+        end
     end)
 end
 
@@ -325,6 +343,17 @@ local function getModuleHeader(module)
     return hdr
 end
 
+local function hookBlockOnShow(block)
+    if type(block) ~= "table" or block.__wfBlockHooked then return end
+    if not block.HookScript then return end
+    block.__wfBlockHooked = true
+    safeCall(function()
+        block:HookScript("OnShow", function(self)
+            if cfg and cfg.enabled and cfg.hideTracker then self:Hide() end
+        end)
+    end)
+end
+
 local function hideTrackerModule(module)
     safeCall(function()
         if module.Hide then module:Hide() end
@@ -332,7 +361,10 @@ local function hideTrackerModule(module)
         local blocks = module.usedBlocks or module.blocks or module.activeBlocks
         if type(blocks) == "table" then
             for _, block in pairs(blocks) do
-                if type(block) == "table" and block.Hide then block:Hide() end
+                if type(block) == "table" then
+                    hookBlockOnShow(block)
+                    if block.Hide then block:Hide() end
+                end
             end
         end
     end)
@@ -548,6 +580,7 @@ local function applyAll()
     suppressTalkingHead()
     suppressAutoQuestPopup()
     suppressMinimapTaskBlob()
+    setTalkingHeadEnabled(not (cfg and cfg.enabled and cfg.hideTracker))
     createNextFrame()
     updateNextFrame()
     scheduleHidePins()
@@ -720,19 +753,21 @@ local subcommands = {
         add("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
         -- Suppression frame status
         add("  TalkingHeadFrame: " .. tostring(TalkingHeadFrame ~= nil)
-            .. "  hooked=" .. tostring(talkingHeadHooked))
+            .. "  hooked=" .. tostring(talkingHeadHooked)
+            .. "  eventRemoved=" .. tostring(talkingHeadEventRemoved))
         add("  autoPopupHooked=" .. tostring(autoPopupHooked)
             .. "  minimapBlobHooked=" .. tostring(minimapBlobHooked))
-        -- Minimap blob candidate check
-        local blobCandidates = {
-            {"Minimap.TaskBlobFrame",    Minimap and rawget(Minimap, "TaskBlobFrame")},
-            {"MinimapCluster.TaskBlob",  MinimapCluster and MinimapCluster.Minimap
-                                         and rawget(MinimapCluster.Minimap, "TaskBlobFrame")},
-            {"MinimapTaskBlobFrame",     _G["MinimapTaskBlobFrame"]},
-            {"TaskPOIFrame",             _G["TaskPOIFrame"]},
-        }
-        for _, pair in ipairs(blobCandidates) do
-            if pair[2] then add("  blob found: " .. pair[1]) end
+        -- Dump Minimap non-function fields to find the blob frame name
+        local mmFrame = (MinimapCluster and MinimapCluster.Minimap) or Minimap
+        if mmFrame then
+            local mmKeys = {}
+            for k, v in pairs(mmFrame) do
+                if type(v) ~= "function" then
+                    mmKeys[#mmKeys+1] = k .. "(" .. type(v) .. ")"
+                end
+            end
+            table.sort(mmKeys)
+            add("  Minimap fields: " .. table.concat(mmKeys, "  "))
         end
 
         -- Show a copyable popup box with the same text.
