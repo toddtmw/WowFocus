@@ -470,12 +470,14 @@ local function hookTrackerModulesByHeader()
                 if type(origUpdate) == "function" then
                     -- Override on instance: skip origUpdate entirely when addon
                     -- is active so no blocks are created and no animation plays.
+                    -- Must return heightUsed, isTruncated that the container
+                    -- expects; return 0, false when we suppress the module.
                     module.Update = function(self, ...)
                         if cfg and cfg.enabled and cfg.hideTracker then
                             hideTrackerModule(self)
-                            return
+                            return 0, false
                         end
-                        origUpdate(self, ...)
+                        return origUpdate(self, ...)
                     end
                 end
             end)
