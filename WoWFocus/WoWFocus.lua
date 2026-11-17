@@ -481,21 +481,24 @@ local subcommands = {
     ["next"]    = function() cfg.showNext = not cfg.showNext ; updateNextFrame() ; printStatus() end,
     ["status"]  = printStatus,
     ["debug"]   = function()
-        print("=== WoWFocus debug ===")
+        -- Collect all debug lines into a table so we can both print and show in a box.
+        local lines = {}
+        local function add(s) lines[#lines+1] = s ; print(s) end
+
+        add("=== WoWFocus debug ===")
         if Enum and Enum.QuestClassification then
             local vals = {}
             for k, v in pairs(Enum.QuestClassification) do
                 vals[#vals+1] = k .. "=" .. tostring(v)
             end
-            print("  QuestClassification: " .. table.concat(vals, "  "))
+            add("  QuestClassification: " .. table.concat(vals, "  "))
         else
-            print("  Enum.QuestClassification: missing")
+            add("  Enum.QuestClassification: missing")
         end
-        print("  IsWorldQuest API: " .. type(C_QuestLog.IsWorldQuest))
-        print("  IsQuestTask  API: " .. type(C_QuestLog.IsQuestTask))
-        print("  mapRefreshHooked: " .. tostring(mapRefreshHooked))
-        print("  AddDataProvider hooked: " .. tostring(addDataProviderHooked))
-        -- Pin pool sizes
+        add("  IsWorldQuest API: " .. type(C_QuestLog.IsWorldQuest))
+        add("  IsQuestTask  API: " .. type(C_QuestLog.IsQuestTask))
+        add("  mapRefreshHooked: " .. tostring(mapRefreshHooked))
+        add("  AddDataProvider hooked: " .. tostring(addDataProviderHooked))
         local poolCount, hiddenPins = 0, 0
         if WorldMapFrame and WorldMapFrame.pinPools then
             for tpl, pool in pairs(WorldMapFrame.pinPools) do
@@ -508,24 +511,22 @@ local subcommands = {
                     end
                     if n > 0 then
                         poolCount = poolCount + 1
-                        print("  pool[" .. tpl .. "] active=" .. n)
+                        add("  pool[" .. tpl .. "] active=" .. n)
                     end
                 end
             end
         end
-        print("  pools with pins=" .. poolCount .. "  would-hide=" .. hiddenPins)
-        -- Tracker module check
+        add("  pools with pins=" .. poolCount .. "  would-hide=" .. hiddenPins)
         for _, globalName in ipairs(SUPPRESSED_TRACKER_MODULES) do
             local m = _G[globalName]
             local blockCount = 0
             if m and m.usedBlocks then
                 for _ in pairs(m.usedBlocks) do blockCount = blockCount + 1 end
             end
-            print("  " .. globalName .. ": " .. (m and "exists" or "nil")
+            add("  " .. globalName .. ": " .. (m and "exists" or "nil")
                 .. "  blocks=" .. blockCount
-                .. "  hooked=" .. tostring(m and m.Update ~= nil))
+                .. "  Update=" .. tostring(m and m.Update ~= nil))
         end
-        -- Provider summary
         local total, patched = 0, 0
         if WorldMapFrame and WorldMapFrame.dataProviders then
             for p in pairs(WorldMapFrame.dataProviders) do
@@ -533,7 +534,41 @@ local subcommands = {
                 if patchedProviders[p] then patched = patched + 1 end
             end
         end
-        print("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
+        add("  total providers=" .. total .. "  ShouldShowQuest patched=" .. patched)
+
+        -- Show a copyable popup box with the same text.
+        local text = table.concat(lines, "\n")
+        if not _G["WoWFocusDebugBox"] then
+            local f = CreateFrame("Frame", "WoWFocusDebugBox", UIParent, "BasicFrameTemplate")
+            f:SetSize(560, 300)
+            f:SetPoint("CENTER")
+            f:SetMovable(true)
+            f:EnableMouse(true)
+            f:RegisterForDrag("LeftButton")
+            f:SetScript("OnDragStart", f.StartMoving)
+            f:SetScript("OnDragStop",  f.StopMovingOrSizing)
+            f:SetFrameStrata("DIALOG")
+            f.TitleText:SetText("WoWFocus Debug — Ctrl+A then Ctrl+C to copy")
+
+            local sf = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+            sf:SetPoint("TOPLEFT",     f, "TOPLEFT",     8, -28)
+            sf:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -26, 8)
+
+            local eb = CreateFrame("EditBox", nil, sf)
+            eb:SetMultiLine(true)
+            eb:SetMaxLetters(0)
+            eb:SetFontObject(ChatFontNormal)
+            eb:SetWidth(510)
+            eb:SetAutoFocus(false)
+            eb:SetScript("OnEscapePressed", function() f:Hide() end)
+            sf:SetScrollChild(eb)
+            f.eb = eb
+        end
+        local box = _G["WoWFocusDebugBox"]
+        box.eb:SetText(text)
+        box.eb:SetFocus()
+        box.eb:HighlightText()
+        box:Show()
     end,
     ["reset"]   = function()
         WoWFocusDB = {}
