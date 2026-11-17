@@ -274,9 +274,10 @@ local function setTalkingHeadEnabled(enabled)
     if not enabled then
         -- Immediate close if already visible.
         closeTalkingHeadNow()
-        -- Periodic ticker: catches alpha-fade-in frames that bypass OnShow.
+        -- Tight ticker (50ms) catches alpha-fade-in frames that bypass OnShow.
+        -- Short interval minimises the audio window before we close the frame.
         if not talkingHeadTicker then
-            talkingHeadTicker = C_Timer.NewTicker(0.25, function()
+            talkingHeadTicker = C_Timer.NewTicker(0.05, function()
                 if cfg and cfg.enabled and cfg.hideTracker then
                     if TalkingHeadFrame and TalkingHeadFrame:IsShown() then
                         closeTalkingHeadNow()
@@ -316,15 +317,35 @@ local function suppressAutoQuestPopup()
 end
 
 -- Suppress the minimap zone-outline blob drawn around world-quest/task areas.
--- In TWW the blob is drawn directly via Minimap:DrawBlob(questID, bool) rather
--- than through a named child frame. We hook that method and immediately erase
--- any blob for a world quest. We also hide any TaskBlobFrame / QuestBlobFrame
--- children that might still exist on some patches.
+-- In TWW, Minimap.DrawBlob is nil and there is no named TaskBlobFrame child.
+-- Debug shows child[1] is an unnamed always-shown frame — likely the blob overlay.
+-- We hook every unnamed Minimap child's OnShow to hide it, and also check named
+-- candidates for older patches.
 local minimapBlobHooked = false
-local function suppressMinimapTaskBlob()
-    if minimapBlobHooked then return end
+local minimapBlobChildren = {}  -- unnamed children we are suppressing
+
+local function suppressMinimapBlobChildren()
     safeCall(function()
-        -- DrawBlob hook: intercept direct blob-draw calls on the minimap.
+        if not Minimap then return end
+        for _, child in ipairs({Minimap:GetChildren()}) do
+            if child and not child:GetName() and not child.__wfBlobHooked then
+                child.__wfBlobHooked = true
+                minimapBlobHooked = true
+                minimapBlobChildren[#minimapBlobChildren + 1] = child
+                child:HookScript("OnShow", function(self)
+                    if cfg and cfg.enabled and cfg.hideMapPins then self:Hide() end
+                end)
+                if child:IsShown() and cfg and cfg.enabled and cfg.hideMapPins then
+                    child:Hide()
+                end
+            end
+        end
+    end)
+end
+
+local function suppressMinimapTaskBlob()
+    -- DrawBlob hook (may become available on some patches).
+    safeCall(function()
         local mmFrame = Minimap
         if mmFrame and type(mmFrame.DrawBlob) == "function" then
             minimapBlobHooked = true
@@ -338,7 +359,9 @@ local function suppressMinimapTaskBlob()
                 end
             end)
         end
-        -- Also hide legacy named child frames if present.
+    end)
+    -- Named legacy candidates.
+    safeCall(function()
         local candidates = {
             Minimap and rawget(Minimap, "TaskBlobFrame"),
             Minimap and rawget(Minimap, "QuestBlobFrame"),
@@ -348,7 +371,8 @@ local function suppressMinimapTaskBlob()
             _G["TaskPOIFrame"],
         }
         for _, f in ipairs(candidates) do
-            if f and f.HookScript then
+            if f and f.HookScript and not f.__wfBlobHooked then
+                f.__wfBlobHooked = true
                 minimapBlobHooked = true
                 if f:IsShown() then f:Hide() end
                 f:HookScript("OnShow", function(self)
@@ -357,6 +381,22 @@ local function suppressMinimapTaskBlob()
             end
         end
     end)
+    -- Unnamed children (the blob overlay in TWW).
+    suppressMinimapBlobChildren()
+end
+
+-- Apply or remove the hide on the blob children when settings change.
+local function applyMinimapBlobVisibility()
+    if not (cfg and cfg.enabled and cfg.hideMapPins) then
+        -- Restore: show any blob children we hid.
+        for _, child in ipairs(minimapBlobChildren) do
+            safeCall(function() child:Show() end)
+        end
+    else
+        for _, child in ipairs(minimapBlobChildren) do
+            safeCall(function() if child:IsShown() then child:Hide() end end)
+        end
+    end
 end
 
 -- ── Objective-tracker block hiding ────────────────────────────────────────
@@ -636,6 +676,7 @@ local function applyAll()
     suppressTalkingHead()
     suppressAutoQuestPopup()
     suppressMinimapTaskBlob()
+    applyMinimapBlobVisibility()
     setTalkingHeadEnabled(not (cfg and cfg.enabled and cfg.hideTracker))
     createNextFrame()
     updateNextFrame()
@@ -669,6 +710,15 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 
     elseif event == "TASK_PROGRESS_UPDATE" then
         scheduleHidePins()
+        -- Close talking head immediately on the event that triggers it.
+        if cfg and cfg.enabled and cfg.hideTracker then
+            C_Timer.After(0, closeTalkingHeadNow)
+        end
+        -- Re-check blob children (new ones may appear when entering a WQ zone).
+        if cfg and cfg.enabled and cfg.hideMapPins then
+            suppressMinimapBlobChildren()
+            applyMinimapBlobVisibility()
+        end
         -- Defer: tracker draws the block after the event fires, so check on next frames.
         C_Timer.After(0,   hideWorldQuestTrackerBlocks)
         C_Timer.After(0.2, hideWorldQuestTrackerBlocks)
@@ -833,13 +883,17 @@ local subcommands = {
                     end
                 end
             end)
-            -- Children: name + IsShown
+            -- Children: name, type, size, visibility
             safeCall(function()
                 local children = {mmGlobal:GetChildren()}
                 for i, child in ipairs(children) do
                     local cname = child:GetName() or "unnamed"
                     local shown = child:IsShown() and "shown" or "hidden"
-                    add("  Minimap child[" .. i .. "]: " .. cname .. " " .. shown)
+                    local otype = child:GetObjectType()
+                    local w, h = child:GetSize()
+                    add("  Minimap child[" .. i .. "]: " .. cname
+                        .. " " .. shown .. " " .. otype
+                        .. " " .. math.floor(w+0.5) .. "x" .. math.floor(h+0.5))
                 end
             end)
         end
