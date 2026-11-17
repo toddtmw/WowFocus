@@ -270,11 +270,53 @@ local function hideWorldQuestTrackerBlocks()
     end)
 end
 
+-- Modules whose every block we suppress entirely when the addon is active.
+-- AUTO_QUEST_POPUP_TRACKER_MODULE is the banner popup that appears on-screen.
+local SUPPRESSED_TRACKER_MODULES = {
+    "WORLD_QUEST_TRACKER_MODULE",
+    "BONUS_OBJECTIVE_TRACKER_MODULE",
+    "AUTO_QUEST_POPUP_TRACKER_MODULE",
+}
+
+local function hideModuleCompletely(module)
+    if not module then return end
+    safeCall(function()
+        if module.Header then module.Header:Hide() end
+        if module.usedBlocks then
+            for _, block in pairs(module.usedBlocks) do
+                if type(block) == "table" and block.Hide then block:Hide() end
+            end
+        end
+        -- Some modules expose a container frame directly.
+        if module.ContentsFrame and module.ContentsFrame.Hide then
+            module.ContentsFrame:Hide()
+        end
+    end)
+end
+
 local trackerHooked = false
 local function hookObjectiveTracker()
     if trackerHooked then return end
+    trackerHooked = true
+
+    -- Hook the specific world-quest/bonus-objective/popup modules by name.
+    -- Doing this inside their own Update ensures we re-hide after every redraw.
+    for _, globalName in ipairs(SUPPRESSED_TRACKER_MODULES) do
+        local module = _G[globalName]
+        if module and module.Update then
+            safeCall(function()
+                hooksecurefunc(module, "Update", function(self)
+                    if cfg and cfg.enabled and cfg.hideTracker then
+                        hideModuleCompletely(self)
+                    end
+                end)
+            end)
+        end
+    end
+
+    -- Fallback: hook the global ObjectiveTracker_Update and frame Update
+    -- to catch any module we may have missed by name.
     safeCall(function()
-        -- Hook whichever entry point exists in this patch.
         hooksecurefunc("ObjectiveTracker_Update", hideWorldQuestTrackerBlocks)
     end)
     safeCall(function()
@@ -282,7 +324,6 @@ local function hookObjectiveTracker()
             hooksecurefunc(ObjectiveTrackerFrame, "Update", hideWorldQuestTrackerBlocks)
         end
     end)
-    trackerHooked = true
 end
 
 -- ── "Next campaign quest" frame ────────────────────────────────────────────
@@ -473,6 +514,17 @@ local subcommands = {
             end
         end
         print("  pools with pins=" .. poolCount .. "  would-hide=" .. hiddenPins)
+        -- Tracker module check
+        for _, globalName in ipairs(SUPPRESSED_TRACKER_MODULES) do
+            local m = _G[globalName]
+            local blockCount = 0
+            if m and m.usedBlocks then
+                for _ in pairs(m.usedBlocks) do blockCount = blockCount + 1 end
+            end
+            print("  " .. globalName .. ": " .. (m and "exists" or "nil")
+                .. "  blocks=" .. blockCount
+                .. "  hooked=" .. tostring(m and m.Update ~= nil))
+        end
         -- Provider summary
         local total, patched = 0, 0
         if WorldMapFrame and WorldMapFrame.dataProviders then
