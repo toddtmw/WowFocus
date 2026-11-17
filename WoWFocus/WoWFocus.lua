@@ -317,38 +317,34 @@ local function suppressAutoQuestPopup()
 end
 
 -- Suppress the minimap zone-outline blob drawn around world-quest/task areas.
--- In TWW, Minimap.DrawBlob is nil and there is no named TaskBlobFrame child.
--- Debug shows child[1] is an unnamed always-shown frame — likely the blob overlay.
--- We hook every unnamed Minimap child's OnShow to hide it, and also check named
--- candidates for older patches.
+-- In TWW, the zone boundary is rendered when a quest is "super-tracked".
+-- We hook C_SuperTrack.SetSuperTrackedQuestID to clear it immediately if the
+-- quest is a world quest, and handle SUPER_TRACKING_CHANGED for the same.
 local minimapBlobHooked = false
-local minimapBlobChildren = {}  -- unnamed children we are suppressing
-
-local function suppressMinimapBlobChildren()
-    safeCall(function()
-        if not Minimap then return end
-        for _, child in ipairs({Minimap:GetChildren()}) do
-            if child and not child:GetName() and not child.__wfBlobHooked then
-                child.__wfBlobHooked = true
-                minimapBlobHooked = true
-                minimapBlobChildren[#minimapBlobChildren + 1] = child
-                child:HookScript("OnShow", function(self)
-                    if cfg and cfg.enabled and cfg.hideMapPins then self:Hide() end
-                end)
-                if child:IsShown() and cfg and cfg.enabled and cfg.hideMapPins then
-                    child:Hide()
-                end
-            end
-        end
-    end)
-end
 
 local function suppressMinimapTaskBlob()
-    -- DrawBlob hook (may become available on some patches).
+    if minimapBlobHooked then return end
+    safeCall(function()
+        if not C_SuperTrack then return end
+        minimapBlobHooked = true
+        hooksecurefunc(C_SuperTrack, "SetSuperTrackedQuestID", function(questID)
+            if cfg and cfg.enabled and cfg.hideMapPins
+               and questID and questID ~= 0
+               and (isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID)) then
+                C_Timer.After(0, function()
+                    safeCall(function()
+                        if C_SuperTrack.GetSuperTrackedQuestID() == questID then
+                            C_SuperTrack.SetSuperTrackedQuestID(0)
+                        end
+                    end)
+                end)
+            end
+        end)
+    end)
+    -- DrawBlob hook kept as fallback for older-patch code paths.
     safeCall(function()
         local mmFrame = Minimap
         if mmFrame and type(mmFrame.DrawBlob) == "function" then
-            minimapBlobHooked = true
             hooksecurefunc(mmFrame, "DrawBlob", function(self, questID, drawIt)
                 if drawIt and cfg and cfg.enabled and cfg.hideMapPins then
                     if isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID) then
@@ -360,59 +356,19 @@ local function suppressMinimapTaskBlob()
             end)
         end
     end)
-    -- Named legacy candidates.
-    safeCall(function()
-        local candidates = {
-            Minimap and rawget(Minimap, "TaskBlobFrame"),
-            Minimap and rawget(Minimap, "QuestBlobFrame"),
-            MinimapCluster and MinimapCluster.Minimap
-                           and rawget(MinimapCluster.Minimap, "TaskBlobFrame"),
-            _G["MinimapTaskBlobFrame"],
-            _G["TaskPOIFrame"],
-        }
-        for _, f in ipairs(candidates) do
-            if f and f.HookScript and not f.__wfBlobHooked then
-                f.__wfBlobHooked = true
-                minimapBlobHooked = true
-                if f:IsShown() then f:Hide() end
-                f:HookScript("OnShow", function(self)
-                    if cfg and cfg.enabled and cfg.hideMapPins then self:Hide() end
-                end)
-            end
-        end
-    end)
-    -- Unnamed children of Minimap (the blob overlay in TWW may be here).
-    suppressMinimapBlobChildren()
-    -- Also try unnamed children of MinimapCluster (blob may be parented there).
-    safeCall(function()
-        if not MinimapCluster then return end
-        for _, child in ipairs({MinimapCluster:GetChildren()}) do
-            if child and not child:GetName() and not child.__wfBlobHooked then
-                child.__wfBlobHooked = true
-                minimapBlobHooked = true
-                minimapBlobChildren[#minimapBlobChildren + 1] = child
-                child:HookScript("OnShow", function(self)
-                    if cfg and cfg.enabled and cfg.hideMapPins then self:Hide() end
-                end)
-                if child:IsShown() and cfg and cfg.enabled and cfg.hideMapPins then
-                    child:Hide()
-                end
-            end
-        end
-    end)
 end
 
--- Apply or remove the hide on the blob children when settings change.
 local function applyMinimapBlobVisibility()
-    if not (cfg and cfg.enabled and cfg.hideMapPins) then
-        -- Restore: show any blob children we hid.
-        for _, child in ipairs(minimapBlobChildren) do
-            safeCall(function() child:Show() end)
-        end
-    else
-        for _, child in ipairs(minimapBlobChildren) do
-            safeCall(function() if child:IsShown() then child:Hide() end end)
-        end
+    -- Clear any active WQ super-tracking when addon is enabled.
+    if cfg and cfg.enabled and cfg.hideMapPins then
+        safeCall(function()
+            if not C_SuperTrack then return end
+            local questID = C_SuperTrack.GetSuperTrackedQuestID()
+            if questID and questID ~= 0
+               and (isWorldQuest(questID) or isBonusObjective(questID) or isRecurring(questID)) then
+                C_SuperTrack.SetSuperTrackedQuestID(0)
+            end
+        end)
     end
 end
 
@@ -505,26 +461,23 @@ local function hookTrackerModulesByHeader()
         if not hookedModuleRefs[module] and HIDDEN_TRACKER_HEADERS[getModuleHeader(module)] then
             hookedModuleRefs[module] = true
             safeCall(function()
-                -- hooksecurefunc only works on instance keys; set the method on
-                -- the instance first if it lives only in the metatable.
-                if not rawget(module, "Update") then
+                -- Find origUpdate: instance key first, then metatable.
+                local origUpdate = rawget(module, "Update")
+                if not origUpdate then
                     local mt = getmetatable(module)
-                    local orig = mt and mt.__index and mt.__index.Update
-                    if type(orig) == "function" then
-                        module.Update = function(self, ...)
-                            orig(self, ...)
-                            if cfg and cfg.enabled and cfg.hideTracker then
-                                hideTrackerModule(self)
-                            end
+                    origUpdate = mt and mt.__index and mt.__index.Update
+                end
+                if type(origUpdate) == "function" then
+                    -- Override on instance: skip origUpdate entirely when addon
+                    -- is active so no blocks are created and no animation plays.
+                    module.Update = function(self, ...)
+                        if cfg and cfg.enabled and cfg.hideTracker then
+                            hideTrackerModule(self)
+                            return
                         end
-                        return
+                        origUpdate(self, ...)
                     end
                 end
-                hooksecurefunc(module, "Update", function(self)
-                    if cfg and cfg.enabled and cfg.hideTracker then
-                        hideTrackerModule(self)
-                    end
-                end)
             end)
             -- Hide immediately.
             if cfg and cfg.enabled and cfg.hideTracker then
@@ -709,6 +662,7 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("QUEST_ACCEPTED")
 eventFrame:RegisterEvent("TASK_PROGRESS_UPDATE")
+eventFrame:RegisterEvent("SUPER_TRACKING_CHANGED")
 eventFrame:RegisterEvent("WORLD_MAP_OPEN")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
@@ -731,15 +685,16 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if cfg and cfg.enabled and cfg.hideTracker then
             C_Timer.After(0, closeTalkingHeadNow)
         end
-        -- Re-check blob children (new ones may appear when entering a WQ zone).
-        if cfg and cfg.enabled and cfg.hideMapPins then
-            suppressMinimapBlobChildren()
-            applyMinimapBlobVisibility()
-        end
+        -- Clear any WQ super-tracking (zone outline on minimap).
+        applyMinimapBlobVisibility()
         -- Defer: tracker draws the block after the event fires, so check on next frames.
         C_Timer.After(0,   hideWorldQuestTrackerBlocks)
         C_Timer.After(0.2, hideWorldQuestTrackerBlocks)
         C_Timer.After(0.5, hideWorldQuestTrackerBlocks)
+
+    elseif event == "SUPER_TRACKING_CHANGED" then
+        -- Clear super-tracking of world quests; this removes the zone outline.
+        applyMinimapBlobVisibility()
 
     elseif event == "QUEST_ACCEPTED" then
         if cfg and cfg.enabled and cfg.hideTracker and arg1 and shouldHideFromTracker(arg1) then
